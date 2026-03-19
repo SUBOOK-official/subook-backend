@@ -17,6 +17,8 @@ jobs:
   notify:
     if: ${{ github.event_name != 'push' || (startsWith(github.ref, 'refs/heads/') && github.event.deleted == false) }}
     runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
     steps:
       - name: Build Discord payload
@@ -170,11 +172,10 @@ jobs:
           NODE
 
       - name: Send to Discord
-        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        if: ${{ env.DISCORD_WEBHOOK_URL != '' }}
         continue-on-error: true
         shell: bash
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
           curl --fail --silent --show-error \

@@ -1,0 +1,183 @@
+name: Discord Notifications
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: ${{ github.event_name != 'push' || (startsWith(github.ref, 'refs/heads/') && github.event.deleted == false) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Build Discord payload
+        shell: bash
+        env:
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const eventPath = process.env.GITHUB_EVENT_PATH;
+          const repoFullName = process.env.GITHUB_REPOSITORY;
+          const serverUrl = process.env.GITHUB_SERVER_URL;
+          const runnerTemp = process.env.RUNNER_TEMP;
+          const event = JSON.parse(fs.readFileSync(eventPath, "utf8"));
+
+          const repoUrl = `${serverUrl}/${repoFullName}`;
+          const payloadPath = path.join(runnerTemp, "discord-payload.json");
+
+          function shortSha(sha) {
+            return String(sha || "").slice(0, 7);
+          }
+
+          function oneLine(text, max = 180) {
+            const clean = String(text || "").replace(/\r?\n/g, " ").trim();
+            return clean.length > max ? `${clean.slice(0, max - 3)}...` : clean;
+          }
+
+          function repoColor(name) {
+            let hash = 0;
+            for (const char of name) {
+              hash = ((hash << 5) - hash + char.charCodeAt(0)) >>> 0;
+            }
+            const color = hash % 0xffffff;
+            return color === 0 ? 0x2f80ed : color;
+          }
+
+          const color = repoColor(repoFullName);
+          const basePayload = {
+            username: `GitHub - ${repoFullName}`,
+            avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+            allowed_mentions: { parse: [] },
+            embeds: [],
+          };
+
+          if (eventName === "workflow_dispatch") {
+            basePayload.embeds.push({
+              title: `[${repoFullName}] manual test`,
+              url: repoUrl,
+              color,
+              description: "Discord webhook test from GitHub Actions.",
+              fields: [
+                {
+                  name: "Repository",
+                  value: `[${repoFullName}](${repoUrl})`,
+                  inline: true,
+                },
+                {
+                  name: "Triggered by",
+                  value: event.sender?.login || "unknown",
+                  inline: true,
+                },
+              ],
+              timestamp: new Date().toISOString(),
+            });
+          } else if (eventName === "push") {
+            const ref = event.ref || "";
+            const branch = ref.replace("refs/heads/", "");
+            const commits = Array.isArray(event.commits) ? event.commits : [];
+            const compareUrl = event.compare || repoUrl;
+            const pusher = event.pusher?.name || event.sender?.login || "unknown";
+
+            const commitLines = commits.slice(0, 3).map((commit) => {
+              const commitUrl = `${serverUrl}/${repoFullName}/commit/${commit.id}`;
+              const author = commit.author?.name || "unknown";
+              return `[\`${shortSha(commit.id)}\`](${commitUrl}) ${oneLine(commit.message, 90)} - ${author}`;
+            });
+
+            if (commits.length > 3) {
+              commitLines.push(`${commits.length - 3} more commit(s)`);
+            }
+
+            basePayload.embeds.push({
+              title: `[${repoFullName}] ${branch} push`,
+              url: compareUrl,
+              color,
+              description: commitLines.join("\n") || "New commits were pushed.",
+              fields: [
+                {
+                  name: "Repository",
+                  value: `[${repoFullName}](${repoUrl})`,
+                  inline: true,
+                },
+                {
+                  name: "Branch",
+                  value: branch || "-",
+                  inline: true,
+                },
+                {
+                  name: "By",
+                  value: pusher,
+                  inline: true,
+                },
+              ],
+              timestamp: new Date().toISOString(),
+            });
+          } else if (eventName === "pull_request") {
+            const pr = event.pull_request;
+            const action = event.action;
+
+            let status = action;
+            if (action === "closed" && pr?.merged) {
+              status = "merged";
+            }
+
+            basePayload.embeds.push({
+              title: `[${repoFullName}] PR #${pr.number} ${status}`,
+              url: pr.html_url,
+              color,
+              description: oneLine(pr.title, 180),
+              fields: [
+                {
+                  name: "Repository",
+                  value: `[${repoFullName}](${repoUrl})`,
+                  inline: true,
+                },
+                {
+                  name: "Branch",
+                  value: `${pr.head.ref} -> ${pr.base.ref}`,
+                  inline: true,
+                },
+                {
+                  name: "Author",
+                  value: pr.user?.login || "unknown",
+                  inline: true,
+                },
+              ],
+              timestamp: new Date().toISOString(),
+            });
+          } else {
+            process.exit(0);
+          }
+
+          fs.writeFileSync(payloadPath, JSON.stringify(basePayload));
+          NODE
+
+      - name: Send to Discord
+        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" \
+            --data "@$RUNNER_TEMP/discord-payload.json" \
+            "$DISCORD_WEBHOOK_URL"

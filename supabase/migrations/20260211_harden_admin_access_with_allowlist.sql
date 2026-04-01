@@ -83,8 +83,6 @@ create policy books_update_admin
   using (public.is_admin_user())
   with check (public.is_admin_user());
 
-insert into public.admin_users (email)
-select lower(u.email)
-from auth.users u
-where u.email is not null
-on conflict (email) do nothing;
+-- Admin access must be managed explicitly through public.admin_users.
+-- Do not bulk copy auth.users here because the auth pool includes both admin
+-- accounts and public member accounts in the same Supabase project.

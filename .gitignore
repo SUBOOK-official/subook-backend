@@ -11,3 +11,6 @@ pnpm-debug.log*
 .vercel.env*
 
 .env*.local
+
+supabase/.branches/
+supabase/.temp/

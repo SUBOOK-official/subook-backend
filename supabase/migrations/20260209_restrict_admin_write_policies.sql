@@ -1,4 +1,4 @@
-﻿create table if not exists public.admin_users (
+create table if not exists public.admin_users (
   email text primary key,
   created_at timestamptz not null default now()
 );

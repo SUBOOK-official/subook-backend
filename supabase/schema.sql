@@ -812,31 +812,13 @@ create table if not exists public.member_profiles (
   updated_at timestamptz not null default now()
 );
 
-create table if not exists public.guest_orders (
-  id bigint generated always as identity primary key,
-  order_number text not null unique,
-  guest_name text not null,
-  guest_email text not null,
-  status text not null default 'payment_completed'
-    check (status in ('payment_completed', 'preparing', 'shipped', 'delivered', 'cancelled')),
-  order_summary text null,
-  total_amount integer null check (total_amount is null or total_amount >= 0),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
 create index if not exists idx_member_profiles_email_lower
   on public.member_profiles (lower(email));
 
-create index if not exists idx_guest_orders_lookup
-  on public.guest_orders (lower(guest_email), upper(order_number));
-
 alter table public.member_profiles enable row level security;
-alter table public.guest_orders enable row level security;
 
 drop policy if exists member_profiles_select_self on public.member_profiles;
 drop policy if exists member_profiles_update_self on public.member_profiles;
-drop policy if exists guest_orders_select_public on public.guest_orders;
 
 create policy member_profiles_select_self
   on public.member_profiles
@@ -862,28 +844,11 @@ begin
 end;
 $$;
 
-create or replace function public.touch_guest_order_updated_at()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$;
-
 drop trigger if exists member_profiles_set_updated_at on public.member_profiles;
 create trigger member_profiles_set_updated_at
 before update on public.member_profiles
 for each row
 execute function public.touch_member_profile_updated_at();
-
-drop trigger if exists guest_orders_set_updated_at on public.guest_orders;
-create trigger guest_orders_set_updated_at
-before update on public.guest_orders
-for each row
-execute function public.touch_guest_order_updated_at();
 
 create or replace function public.sync_member_profile_from_auth()
 returns trigger
@@ -1056,46 +1021,7 @@ as $$
   );
 $$;
 
-create or replace function public.lookup_guest_order(
-  p_guest_name text,
-  p_guest_email text,
-  p_order_number text
-)
-returns table (
-  id bigint,
-  order_number text,
-  guest_name text,
-  guest_email text,
-  status text,
-  order_summary text,
-  total_amount integer,
-  created_at timestamptz
-)
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select
-    go.id,
-    go.order_number,
-    go.guest_name,
-    go.guest_email,
-    go.status,
-    go.order_summary,
-    go.total_amount,
-    go.created_at
-  from public.guest_orders go
-  where lower(go.guest_email) = lower(btrim(coalesce(p_guest_email, '')))
-    and regexp_replace(coalesce(go.guest_name, ''), '\s+', '', 'g')
-      = regexp_replace(btrim(coalesce(p_guest_name, '')), '\s+', '', 'g')
-    and upper(go.order_number) = upper(btrim(coalesce(p_order_number, '')))
-  order by go.created_at desc
-  limit 1;
-$$;
-
 grant execute on function public.lookup_member_for_password_reset(text, text) to anon, authenticated;
-grant execute on function public.lookup_guest_order(text, text, text) to anon, authenticated;
 grant execute on function public.get_current_auth_account_role() to authenticated;
 
 create table if not exists public.member_shipping_addresses (
@@ -1126,6 +1052,13 @@ create table if not exists public.member_settlement_accounts (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.wishlist_items (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  product_id bigint not null references public.products(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists idx_member_shipping_addresses_user_id_created_at
   on public.member_shipping_addresses (user_id, created_at desc);
 
@@ -1140,8 +1073,18 @@ create unique index if not exists idx_member_settlement_accounts_default
   on public.member_settlement_accounts (user_id)
   where is_default;
 
+create unique index if not exists idx_wishlist_items_user_product
+  on public.wishlist_items (user_id, product_id);
+
+create index if not exists idx_wishlist_items_user_created_at
+  on public.wishlist_items (user_id, created_at desc, id desc);
+
+create index if not exists idx_wishlist_items_product_id
+  on public.wishlist_items (product_id);
+
 alter table public.member_shipping_addresses enable row level security;
 alter table public.member_settlement_accounts enable row level security;
+alter table public.wishlist_items enable row level security;
 
 drop policy if exists member_shipping_addresses_select_self on public.member_shipping_addresses;
 drop policy if exists member_shipping_addresses_insert_self on public.member_shipping_addresses;
@@ -1151,6 +1094,9 @@ drop policy if exists member_settlement_accounts_select_self on public.member_se
 drop policy if exists member_settlement_accounts_insert_self on public.member_settlement_accounts;
 drop policy if exists member_settlement_accounts_update_self on public.member_settlement_accounts;
 drop policy if exists member_settlement_accounts_delete_self on public.member_settlement_accounts;
+drop policy if exists wishlist_items_select_self on public.wishlist_items;
+drop policy if exists wishlist_items_insert_self on public.wishlist_items;
+drop policy if exists wishlist_items_delete_self on public.wishlist_items;
 
 create policy member_shipping_addresses_select_self
   on public.member_shipping_addresses
@@ -1202,6 +1148,24 @@ create policy member_settlement_accounts_delete_self
   to authenticated
   using (auth.uid() = user_id);
 
+create policy wishlist_items_select_self
+  on public.wishlist_items
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+create policy wishlist_items_insert_self
+  on public.wishlist_items
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+create policy wishlist_items_delete_self
+  on public.wishlist_items
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
 create or replace function public.touch_member_row_updated_at()
 returns trigger
 language plpgsql
@@ -1247,7 +1211,10 @@ returns table (
   estimated_settled_value integer,
   latest_shipment_created_at timestamptz,
   latest_shipment_pickup_date date,
-  latest_shipment_status text
+  latest_shipment_status text,
+  purchase_in_progress_count integer,
+  current_month_settlement_total integer,
+  total_settlement_amount integer
 )
 language sql
 stable
@@ -1279,7 +1246,17 @@ as $$
     from public.member_settlement_accounts
     where user_id = auth.uid()
   ),
-  shipment_stats as (
+  pickup_request_stats as (
+    select
+      count(*)::integer as shipment_count,
+      count(*) filter (where pr.created_at >= now() - interval '30 days')::integer as recent_shipment_count,
+      max(pr.created_at) as latest_shipment_created_at,
+      max(pr.created_at)::date as latest_shipment_pickup_date,
+      (array_agg(pr.status order by pr.created_at desc, pr.id desc))[1] as latest_shipment_status
+    from public.pickup_requests pr
+    where pr.user_id = auth.uid()
+  ),
+  legacy_shipment_stats as (
     select
       count(*)::integer as shipment_count,
       count(*) filter (where s.created_at >= now() - interval '30 days')::integer as recent_shipment_count,
@@ -1289,24 +1266,73 @@ as $$
     from public.shipments s
     where s.user_id = auth.uid()
   ),
-  book_stats as (
+  shipment_stats as (
+    select
+      case
+        when pickup_request_stats.shipment_count > 0 then pickup_request_stats.shipment_count
+        else legacy_shipment_stats.shipment_count
+      end as shipment_count,
+      case
+        when pickup_request_stats.shipment_count > 0 then pickup_request_stats.recent_shipment_count
+        else legacy_shipment_stats.recent_shipment_count
+      end as recent_shipment_count,
+      coalesce(
+        pickup_request_stats.latest_shipment_created_at,
+        legacy_shipment_stats.latest_shipment_created_at
+      ) as latest_shipment_created_at,
+      coalesce(
+        pickup_request_stats.latest_shipment_pickup_date,
+        legacy_shipment_stats.latest_shipment_pickup_date
+      ) as latest_shipment_pickup_date,
+      coalesce(
+        pickup_request_stats.latest_shipment_status,
+        legacy_shipment_stats.latest_shipment_status
+      ) as latest_shipment_status
+    from pickup_request_stats
+    cross join legacy_shipment_stats
+  ),
+  inventory_stats as (
     select
       count(b.id)::integer as total_book_count,
       count(*) filter (where b.status = 'on_sale')::integer as on_sale_book_count,
       count(*) filter (where b.status = 'settled')::integer as settled_book_count,
-      coalesce(sum(b.price) filter (where b.status = 'on_sale'), 0)::integer as estimated_on_sale_value,
-      coalesce(sum(b.price) filter (where b.status = 'settled'), 0)::integer as estimated_settled_value
+      coalesce(sum(b.price) filter (where b.status = 'on_sale'), 0)::integer as estimated_on_sale_value
     from public.books b
     join public.shipments s
       on s.id = b.shipment_id
     where s.user_id = auth.uid()
+  ),
+  purchase_stats as (
+    select
+      count(*) filter (where o.status in ('pending', 'paid', 'shipping', 'delivered'))::integer
+        as purchase_in_progress_count
+    from public.orders o
+    where o.user_id = auth.uid()
+  ),
+  settlement_stats as (
+    select
+      coalesce(sum(st.net_amount) filter (
+        where st.status = 'completed'
+          and st.completed_at >= date_trunc('month', now())
+      ), 0)::integer as current_month_settlement_total,
+      coalesce(sum(st.net_amount) filter (where st.status = 'completed'), 0)::integer
+        as total_settlement_amount,
+      coalesce(sum(st.net_amount) filter (where st.status in ('pending', 'approved')), 0)::integer
+        as estimated_settled_value
+    from public.settlements st
+    where st.seller_user_id = auth.uid()
   )
   select
     member.user_id,
     member.email,
     member.name,
     member.nickname,
-    coalesce(nullif(btrim(member.nickname), ''), member.name) as display_name,
+    coalesce(
+      nullif(btrim(member.nickname), ''),
+      nullif(btrim(member.name), ''),
+      split_part(member.email, '@', 1),
+      '회원'
+    ) as display_name,
     member.phone,
     member.marketing_opt_in,
     address_stats.shipping_address_count,
@@ -1315,19 +1341,24 @@ as $$
     account_stats.default_settlement_account_id,
     shipment_stats.shipment_count,
     shipment_stats.recent_shipment_count,
-    book_stats.total_book_count,
-    book_stats.on_sale_book_count,
-    book_stats.settled_book_count,
-    book_stats.estimated_on_sale_value,
-    book_stats.estimated_settled_value,
+    inventory_stats.total_book_count,
+    inventory_stats.on_sale_book_count,
+    inventory_stats.settled_book_count,
+    inventory_stats.estimated_on_sale_value,
+    settlement_stats.estimated_settled_value,
     shipment_stats.latest_shipment_created_at,
     shipment_stats.latest_shipment_pickup_date,
-    shipment_stats.latest_shipment_status
+    shipment_stats.latest_shipment_status,
+    purchase_stats.purchase_in_progress_count,
+    settlement_stats.current_month_settlement_total,
+    settlement_stats.total_settlement_amount
   from member
   cross join address_stats
   cross join account_stats
   cross join shipment_stats
-  cross join book_stats;
+  cross join inventory_stats
+  cross join purchase_stats
+  cross join settlement_stats;
 $$;
 
 create or replace function public.get_member_recent_shipments(
@@ -1643,38 +1674,8 @@ as $$
         select 1
         from public.books b
         where b.product_id = p.id
-          and b.status = 'on_sale'
           and b.is_public = true
       )
-    limit 1
-  ),
-  representative_book as (
-    select
-      b.id as book_id,
-      b.condition_grade,
-      b.price,
-      b.original_price,
-      case
-        when b.original_price is null or b.original_price <= 0 or b.price is null then null
-        else greatest(0, least(100, round(((b.original_price - b.price)::numeric / b.original_price) * 100)::integer))
-      end as discount_rate,
-      b.cover_image_url as book_cover_image_url,
-      b.inspection_image_urls,
-      b.writing_percentage,
-      b.has_damage,
-      b.inspection_notes,
-      b.inspected_at,
-      b.created_at as book_created_at
-    from public.books b
-    join target_product p
-      on p.id = b.product_id
-    where b.status = 'on_sale'
-      and b.is_public = true
-    order by
-      public.storefront_condition_grade_rank(b.condition_grade),
-      b.price asc nulls last,
-      b.created_at desc,
-      b.id desc
     limit 1
   ),
   option_book_rows as (
@@ -1720,6 +1721,29 @@ as $$
     join target_product p
       on p.id = b.product_id
     where b.is_public = true
+  ),
+  representative_book as (
+    select
+      option_book_rows.book_id,
+      option_book_rows.condition_grade,
+      option_book_rows.price,
+      option_book_rows.original_price,
+      option_book_rows.discount_rate,
+      option_book_rows.cover_image_url as book_cover_image_url,
+      option_book_rows.inspection_image_urls,
+      option_book_rows.writing_percentage,
+      option_book_rows.has_damage,
+      option_book_rows.inspection_notes,
+      option_book_rows.inspected_at,
+      option_book_rows.created_at as book_created_at
+    from option_book_rows
+    order by
+      option_book_rows.availability_rank,
+      option_book_rows.condition_rank,
+      option_book_rows.price asc nulls last,
+      option_book_rows.created_at desc,
+      option_book_rows.book_id desc
+    limit 1
   ),
   option_books as (
     select
@@ -1842,6 +1866,78 @@ as $$
   left join representative_book on true
   cross join related_books
   cross join option_books;
+$$;
+
+create or replace function public.get_my_wishlist_products(
+  p_limit integer default 24,
+  p_offset integer default 0
+)
+returns table (
+  wishlisted_at timestamptz,
+  id bigint,
+  product_id bigint,
+  title text,
+  option text,
+  subject text,
+  brand text,
+  book_type text,
+  published_year integer,
+  instructor_name text,
+  condition_grade text,
+  price integer,
+  original_price integer,
+  discount_rate integer,
+  cover_image_url text,
+  inspection_image_urls text[],
+  writing_percentage integer,
+  has_damage boolean,
+  inspection_notes text,
+  inspected_at timestamptz,
+  created_at timestamptz,
+  related_books jsonb,
+  option_books jsonb,
+  available_option_count integer,
+  sold_out_option_count integer,
+  total_option_count integer
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    wi.created_at as wishlisted_at,
+    detail.id,
+    detail.product_id,
+    detail.title,
+    detail.option,
+    detail.subject,
+    detail.brand,
+    detail.book_type,
+    detail.published_year,
+    detail.instructor_name,
+    detail.condition_grade,
+    detail.price,
+    detail.original_price,
+    detail.discount_rate,
+    detail.cover_image_url,
+    detail.inspection_image_urls,
+    detail.writing_percentage,
+    detail.has_damage,
+    detail.inspection_notes,
+    detail.inspected_at,
+    detail.created_at,
+    detail.related_books,
+    detail.option_books,
+    detail.available_option_count,
+    detail.sold_out_option_count,
+    detail.total_option_count
+  from public.wishlist_items wi
+  cross join lateral public.get_public_store_product_detail(wi.product_id) detail
+  where wi.user_id = auth.uid()
+  order by wi.created_at desc, wi.id desc
+  offset greatest(0, coalesce(p_offset, 0))
+  limit greatest(1, least(coalesce(p_limit, 24), 200));
 $$;
 
 create or replace function public.list_public_store_books(
@@ -2097,5 +2193,6 @@ grant execute on function public.storefront_condition_grade_rank(text) to anon, 
 grant execute on function public.storefront_product_group_key(text, text, text, text, text, integer, text) to anon, authenticated;
 grant execute on function public.list_public_store_products(text[], text[], text[], integer[], text[], text, text, integer, integer) to anon, authenticated;
 grant execute on function public.get_public_store_product_detail(bigint) to anon, authenticated;
+grant execute on function public.get_my_wishlist_products(integer, integer) to authenticated;
 grant execute on function public.list_public_store_books(text[], text[], text[], integer[], text[], text, text, integer, integer) to anon, authenticated;
 grant execute on function public.get_public_store_book_detail(bigint) to anon, authenticated;

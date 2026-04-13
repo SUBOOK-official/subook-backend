@@ -7,6 +7,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+AGENTS.md
+**/AGENTS.md
+
 .vercel
 .vercel.env*
 

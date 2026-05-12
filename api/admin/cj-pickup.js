@@ -83,10 +83,10 @@ function getSupabaseConfig() {
       process.env.SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ANON_KEY,
+    // service_role은 VITE_* fallback 금지 (client 번들 embed 위험)
     serviceKey:
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_KEY ||
-      process.env.VITE_SUPABASE_ADMIN_KEY,
+      process.env.SUPABASE_SERVICE_KEY,
   };
 }
 

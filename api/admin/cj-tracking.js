@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
-const CJ_REQUEST_TIMEOUT_MS = 3_000;
-const CJ_RETRY_COUNT = 1;
+const CJ_REQUEST_TIMEOUT_MS = Number(process.env.CJ_REQUEST_TIMEOUT_MS) || 12_000;
+const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 2;
 const DEFAULT_CJ_TRACKING_ENDPOINT = "/tracking/{waybillNo}";
 const CJ_CARRIER_NAME = "CJ대한통운";
 

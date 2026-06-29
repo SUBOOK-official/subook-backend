@@ -1,9 +1,21 @@
 import { createClient } from "@supabase/supabase-js";
 
+// ──────────────────────────────────────────────────────────────────────────
+// CJ대한통운 Open API (택배 표준 API) — 배송(집화) 추적
+//
+// 흐름: ReqOneDayToken(1Day 토큰) → ReqOneGdsTrc(운송장번호 기준 단건 추적)
+// 인증: 헤더 CJ-Gateway-APIKey + 바디 DATA.TOKEN_NUM
+// 응답 DATA: [ { CRG_ST(상태코드), CRG_ST_NM(상태명), SCAN_YMD, SCAN_HOUR,
+//               DEALT_BRAN_NM(담당점소), INVC_NO, ACPTR_NM(인수자) }, ... ]
+// 규격: 개발자포털 자료실 "CJLAPI-택배 표준 API Developer Guide" (V3.9.4) 기준
+// ──────────────────────────────────────────────────────────────────────────
+
 const CJ_REQUEST_TIMEOUT_MS = Number(process.env.CJ_REQUEST_TIMEOUT_MS) || 12_000;
 const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 2;
-const DEFAULT_CJ_TRACKING_ENDPOINT = "/tracking/{waybillNo}";
 const CJ_CARRIER_NAME = "CJ대한통운";
+
+const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
+const DEFAULT_TRACKING_ENDPOINT = "/ReqOneGdsTrc";
 
 const PICKUP_SELECT = `
   id,
@@ -64,7 +76,7 @@ function getSupabaseConfig() {
       process.env.SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ANON_KEY,
-    // service_role은 VITE_* fallback 금지 (client 번들 embed 위험)
+    // ⚠️ service_role은 VITE_* fallback 금지 (VITE_ prefix는 client 번들에 embed됨)
     serviceKey:
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_SERVICE_KEY,
@@ -121,11 +133,17 @@ function isMockMode() {
 
 function getCjConfig() {
   return {
-    baseUrl: process.env.CJ_API_BASE_URL || process.env.CJ_LOGISTICS_API_BASE_URL || "",
+    baseUrl:
+      process.env.CJ_API_BASE_URL ||
+      process.env.CJ_LOGISTICS_API_BASE_URL ||
+      "",
+    tokenEndpoint: process.env.CJ_TOKEN_ENDPOINT || DEFAULT_TOKEN_ENDPOINT,
     trackingEndpoint:
       process.env.CJ_TRACKING_ENDPOINT ||
       process.env.CJ_LOGISTICS_TRACKING_ENDPOINT ||
-      DEFAULT_CJ_TRACKING_ENDPOINT,
+      DEFAULT_TRACKING_ENDPOINT,
+    custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
+    bizRegNum: process.env.CJ_BIZ_REG_NUM || "",
   };
 }
 
@@ -133,13 +151,9 @@ function normalizeTrackingNumber(value) {
   return String(value || "").replace(/[^0-9A-Za-z]/g, "").trim();
 }
 
-function joinTrackingUrl(baseUrl, endpoint, waybillNo) {
+function joinUrl(baseUrl, endpoint) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
-  const path = String(endpoint || DEFAULT_CJ_TRACKING_ENDPOINT)
-    .replace("{waybillNo}", encodeURIComponent(waybillNo))
-    .replace(":waybillNo", encodeURIComponent(waybillNo))
-    .replace(/^\/+/, "");
-
+  const path = String(endpoint || "").replace(/^\/+/, "");
   return `${base}/${path}`;
 }
 
@@ -158,41 +172,18 @@ function parseExtraHeaders() {
 }
 
 function buildCjHeaders() {
-  const headers = {
-    "Content-Type": "application/json;charset=UTF-8",
+  const gatewayKey =
+    process.env.CJ_GATEWAY_API_KEY ||
+    process.env.CJ_API_KEY ||
+    process.env.CJ_LOGISTICS_API_KEY ||
+    "";
+
+  return {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "CJ-Gateway-APIKey": gatewayKey,
     ...parseExtraHeaders(),
   };
-
-  const apiKey = process.env.CJ_API_KEY || process.env.CJ_LOGISTICS_API_KEY || "";
-  const apiSecret = process.env.CJ_API_SECRET || process.env.CJ_LOGISTICS_API_SECRET || "";
-  const customerId = process.env.CJ_CUSTOMER_ID || process.env.CJ_LOGISTICS_CUSTOMER_ID || "";
-  const contractId = process.env.CJ_CONTRACT_ID || process.env.CJ_LOGISTICS_CONTRACT_ID || "";
-
-  const apiKeyHeader = process.env.CJ_API_KEY_HEADER || "";
-  if (apiKey && apiKeyHeader) {
-    headers[apiKeyHeader] = apiKey;
-  } else if (apiKey) {
-    const authHeader = process.env.CJ_API_AUTH_HEADER || "Authorization";
-    const authScheme = process.env.CJ_API_AUTH_SCHEME || "Bearer";
-    headers[authHeader] = authScheme ? `${authScheme} ${apiKey}` : apiKey;
-  }
-
-  const secretHeader = process.env.CJ_API_SECRET_HEADER || "";
-  if (apiSecret && secretHeader) {
-    headers[secretHeader] = apiSecret;
-  }
-
-  const customerHeader = process.env.CJ_CUSTOMER_ID_HEADER || "";
-  if (customerId && customerHeader) {
-    headers[customerHeader] = customerId;
-  }
-
-  const contractHeader = process.env.CJ_CONTRACT_ID_HEADER || "";
-  if (contractId && contractHeader) {
-    headers[contractHeader] = contractId;
-  }
-
-  return headers;
 }
 
 function makeTimeoutError(timeoutMs) {
@@ -267,131 +258,120 @@ async function requestJsonWithRetry(url, options) {
   throw lastError || new Error("CJ_API_REQUEST_FAILED");
 }
 
-function getPathValue(source, path) {
-  return path.split(".").reduce((current, key) => {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    return current[key];
-  }, source);
+function isCjSuccess(body) {
+  return String(body?.RESULT_CD || "").toUpperCase().startsWith("S");
 }
 
-function extractFirstString(source, paths) {
-  for (const path of paths) {
-    const value = getPathValue(source, path);
-    if (value !== null && value !== undefined && String(value).trim()) {
-      return String(value).trim();
-    }
+function getCjMessage(body) {
+  return String(body?.RESULT_DETAIL ?? "").trim();
+}
+
+async function postCj(cfg, endpoint, data) {
+  if (!cfg.baseUrl) {
+    const error = new Error("CJ_API_BASE_URL is required. Set CJ_LOGISTICS_MOCK=true for local mock mode.");
+    error.code = "CJ_CONFIG_MISSING";
+    error.statusCode = 500;
+    throw error;
   }
 
-  return "";
+  const { body } = await requestJsonWithRetry(joinUrl(cfg.baseUrl, endpoint), {
+    method: "POST",
+    headers: buildCjHeaders(),
+    body: JSON.stringify({ DATA: data }),
+  });
+
+  return body;
 }
 
-function extractFirstArray(source, paths) {
-  for (const path of paths) {
-    const value = getPathValue(source, path);
-    if (Array.isArray(value)) {
-      return value;
-    }
+async function getOneDayToken(cfg) {
+  if (isMockMode()) {
+    return `MOCK-TOKEN-${Date.now()}`;
   }
 
-  return [];
+  if (!cfg.custId) {
+    const error = new Error("CJ_CUST_ID(고객사코드)가 설정되지 않았습니다.");
+    error.code = "CJ_CUST_ID_MISSING";
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const body = await postCj(cfg, cfg.tokenEndpoint, {
+    CUST_ID: cfg.custId,
+    BIZ_REG_NUM: cfg.bizRegNum,
+  });
+
+  if (!isCjSuccess(body)) {
+    const error = new Error(getCjMessage(body) || "CJ 토큰 발급에 실패했습니다.");
+    error.code = "CJ_TOKEN_FAILED";
+    error.statusCode = 502;
+    error.responseBody = body;
+    throw error;
+  }
+
+  const token = String(body?.DATA?.TOKEN_NUM || "").trim();
+  if (!token) {
+    const error = new Error("CJ 토큰 응답에 TOKEN_NUM이 없습니다.");
+    error.code = "CJ_TOKEN_EMPTY";
+    error.statusCode = 502;
+    error.responseBody = body;
+    throw error;
+  }
+
+  return token;
 }
 
+function pad2(value) {
+  return String(value || "").padStart(2, "0");
+}
+
+// CJ 추적 이벤트(DATA[] 요소) → 내부 정규화 이벤트.
 function normalizeTrackingEvents(events) {
   return events
     .filter((event) => event && typeof event === "object")
-    .map((event) => ({
-      statusCode:
-        event.statusCode ||
-        event.status_code ||
-        event.code ||
-        event.scanCode ||
-        event.scan_code ||
-        null,
-      statusText:
-        event.statusText ||
-        event.status_text ||
-        event.status ||
-        event.description ||
-        event.message ||
-        event.scanName ||
-        event.scan_name ||
-        null,
-      location:
-        event.location ||
-        event.branchName ||
-        event.branch_name ||
-        event.office ||
-        null,
-      occurredAt:
-        event.occurredAt ||
-        event.occurred_at ||
-        event.time ||
-        event.datetime ||
-        event.createdAt ||
-        event.created_at ||
-        null,
-    }));
+    .map((event) => {
+      const ymd = String(event.SCAN_YMD || "").trim();
+      const hour = String(event.SCAN_HOUR || "").trim();
+      const occurredAt = ymd ? (hour ? `${ymd} ${hour}` : ymd) : null;
+      return {
+        statusCode: event.CRG_ST != null ? String(event.CRG_ST) : null,
+        statusText: String(event.CRG_ST_NM || "").trim() || null,
+        location: String(event.DEALT_BRAN_NM || "").trim() || null,
+        occurredAt,
+        receiver: String(event.ACPTR_NM || "").trim() || null,
+      };
+    });
+}
+
+function pickLatestEvent(events) {
+  let latest = null;
+  for (const event of events) {
+    if (!latest) {
+      latest = event;
+      continue;
+    }
+    // occurredAt('YYYY-MM-DD HH:MM:SS')는 문자열 비교로 시간순 정렬 가능.
+    if (String(event.occurredAt || "") >= String(latest.occurredAt || "")) {
+      latest = event;
+    }
+  }
+  return latest || {};
 }
 
 function normalizeTrackingResponse(waybillNo, responseBody) {
-  const events = normalizeTrackingEvents(
-    extractFirstArray(responseBody, [
-      "events",
-      "history",
-      "histories",
-      "trackingEvents",
-      "data.events",
-      "data.history",
-      "data.histories",
-      "data.trackingEvents",
-      "result.events",
-      "result.history",
-      "result.histories",
-      "result.trackingEvents",
-    ]),
-  );
+  const rawArray = Array.isArray(responseBody?.DATA)
+    ? responseBody.DATA
+    : Array.isArray(responseBody?.DATA?.ARRAY)
+      ? responseBody.DATA.ARRAY
+      : [];
 
-  const lastEvent = events[events.length - 1] || {};
-  const statusCode =
-    extractFirstString(responseBody, [
-      "statusCode",
-      "status_code",
-      "code",
-      "data.statusCode",
-      "data.status_code",
-      "data.code",
-      "result.statusCode",
-      "result.status_code",
-      "result.code",
-    ]) ||
-    lastEvent.statusCode ||
-    "";
-  const statusText =
-    extractFirstString(responseBody, [
-      "statusText",
-      "status_text",
-      "status",
-      "message",
-      "description",
-      "data.statusText",
-      "data.status_text",
-      "data.status",
-      "data.message",
-      "result.statusText",
-      "result.status_text",
-      "result.status",
-      "result.message",
-    ]) ||
-    lastEvent.statusText ||
-    "";
+  const events = normalizeTrackingEvents(rawArray);
+  const latest = pickLatestEvent(events);
 
   return {
     waybillNo,
     carrier: CJ_CARRIER_NAME,
-    statusCode: statusCode ? String(statusCode) : null,
-    statusText: statusText ? String(statusText) : "상태 미확인",
+    statusCode: latest.statusCode ? String(latest.statusCode) : null,
+    statusText: latest.statusText ? String(latest.statusText) : "상태 미확인",
     events,
     rawResponse: responseBody,
   };
@@ -402,38 +382,37 @@ async function fetchCjTracking(waybillNo) {
     return {
       waybillNo,
       carrier: CJ_CARRIER_NAME,
-      statusCode: "PICKUP_SCHEDULED",
-      statusText: "수거접수",
+      statusCode: "11",
+      statusText: "집화접수",
       events: [
         {
-          statusCode: "PICKUP_SCHEDULED",
-          statusText: "수거접수",
+          statusCode: "11",
+          statusText: "집화접수",
           location: "CJ대한통운",
           occurredAt: new Date().toISOString(),
+          receiver: null,
         },
       ],
-      rawResponse: {
-        mock: true,
-        waybillNo,
-        statusCode: "PICKUP_SCHEDULED",
-        statusText: "수거접수",
-      },
+      rawResponse: { mock: true, RESULT_CD: "S", waybillNo },
     };
   }
 
-  const config = getCjConfig();
-  if (!config.baseUrl) {
-    const error = new Error("CJ_API_BASE_URL is required. Set CJ_LOGISTICS_MOCK=true for local mock mode.");
-    error.code = "CJ_CONFIG_MISSING";
-    error.statusCode = 500;
+  const cfg = getCjConfig();
+  const token = await getOneDayToken(cfg);
+
+  const body = await postCj(cfg, cfg.trackingEndpoint, {
+    CLNTNUM: cfg.custId,
+    INVC_NO: waybillNo,
+    TOKEN_NUM: token,
+  });
+
+  if (!isCjSuccess(body)) {
+    const error = new Error(getCjMessage(body) || "CJ 배송 추적 조회에 실패했습니다.");
+    error.code = "CJ_TRACKING_FAILED";
+    error.statusCode = 502;
+    error.responseBody = body;
     throw error;
   }
-
-  const url = joinTrackingUrl(config.baseUrl, config.trackingEndpoint, waybillNo);
-  const { body } = await requestJsonWithRetry(url, {
-    method: "GET",
-    headers: buildCjHeaders(),
-  });
 
   return normalizeTrackingResponse(waybillNo, body);
 }
@@ -441,13 +420,13 @@ async function fetchCjTracking(waybillNo) {
 function mapTrackingToPickupStatus({ statusCode, statusText }) {
   const haystack = `${statusCode || ""} ${statusText || ""}`.toLowerCase();
 
-  if (/cancel|취소|반송/.test(haystack)) {
+  if (/cancel|취소|반송|반품/.test(haystack)) {
     return "cancelled";
   }
   if (/delivered|complete|배송완료|배달완료|도착|입고/.test(haystack)) {
     return "arrived";
   }
-  if (/pickup|collect|picked|집화|수거|인수|상품인수|배송중|이동중/.test(haystack)) {
+  if (/pickup|collect|picked|집화|수거|인수|상품인수|배송중|이동중|간선/.test(haystack)) {
     return "picking_up";
   }
   if (/accept|register|예약|접수|scheduled|received/.test(haystack)) {

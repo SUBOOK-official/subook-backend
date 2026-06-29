@@ -1,10 +1,25 @@
 import { createClient } from "@supabase/supabase-js";
 
+// ──────────────────────────────────────────────────────────────────────────
+// CJ대한통운 Open API (택배 표준 API) — 수거(집화) 예약 접수
+//
+// 흐름: ReqOneDayToken(1Day 토큰) → ReqInvcNo(채번=운송장번호) → RegBook(예약접수)
+// 인증: 헤더 CJ-Gateway-APIKey + 바디 DATA.TOKEN_NUM + DATA.CUST_ID(고객사코드)
+// 환경: 테스트 https://dxapi-dev.cjlogistics.com:5054 / 운영 https://dxapi.cjlogistics.com:5052
+// 규격: 개발자포털 자료실 "CJLAPI-택배 표준 API Developer Guide" (V3.9.4) 기준
+//
+// 수북 수거 모델 = 셀러(SENDR, 발송인) → 수북 입고센터(RCVR, 수취인) 집화.
+// 응답 래퍼: { "RESULT_CD":"S"|"S200"(성공) | "E"|"E4xx"(실패), "RESULT_DETAIL":..., "DATA":{...} }
+// ──────────────────────────────────────────────────────────────────────────
+
 const CJ_REQUEST_TIMEOUT_MS = Number(process.env.CJ_REQUEST_TIMEOUT_MS) || 12_000;
 const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 2;
 const MAX_BULK_PICKUP_COUNT = 30;
-const DEFAULT_CJ_PICKUP_ENDPOINT = "/pickup";
 const CJ_CARRIER_NAME = "CJ대한통운";
+
+const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
+const DEFAULT_INVCNO_ENDPOINT = "/ReqInvcNo";
+const DEFAULT_REGBOOK_ENDPOINT = "/RegBook";
 
 const PICKUP_SELECT = `
   id,
@@ -17,6 +32,9 @@ const PICKUP_SELECT = `
   pickup_address_line1,
   pickup_address_line2,
   pickup_memo,
+  desired_pickup_date,
+  box_count,
+  expected_book_count,
   item_count,
   tracking_number,
   tracking_carrier,
@@ -83,7 +101,7 @@ function getSupabaseConfig() {
       process.env.SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ADMIN_ANON_KEY ||
       process.env.VITE_SUPABASE_ANON_KEY,
-    // service_role은 VITE_* fallback 금지 (client 번들 embed 위험)
+    // ⚠️ service_role은 VITE_* fallback 금지 (VITE_ prefix는 client 번들에 embed됨)
     serviceKey:
       process.env.SUPABASE_SERVICE_ROLE_KEY ||
       process.env.SUPABASE_SERVICE_KEY,
@@ -140,14 +158,9 @@ function isMockMode() {
   );
 }
 
-function normalizeEndpoint(endpoint) {
-  const text = String(endpoint || "").trim();
-  return text || DEFAULT_CJ_PICKUP_ENDPOINT;
-}
-
 function joinUrl(baseUrl, endpoint) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
-  const path = normalizeEndpoint(endpoint).replace(/^\/+/, "");
+  const path = String(endpoint || "").replace(/^\/+/, "");
   return `${base}/${path}`;
 }
 
@@ -165,73 +178,68 @@ function parseExtraHeaders() {
   }
 }
 
+// CJ 게이트웨이 인증 헤더. 모든 API 공통으로 CJ-Gateway-APIKey 헤더를 요구한다.
 function buildCjHeaders() {
-  const headers = {
-    "Content-Type": "application/json;charset=UTF-8",
+  const gatewayKey =
+    process.env.CJ_GATEWAY_API_KEY ||
+    process.env.CJ_API_KEY ||
+    process.env.CJ_LOGISTICS_API_KEY ||
+    "";
+
+  return {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "CJ-Gateway-APIKey": gatewayKey,
     ...parseExtraHeaders(),
   };
-
-  const apiKey = process.env.CJ_API_KEY || process.env.CJ_LOGISTICS_API_KEY || "";
-  const apiSecret = process.env.CJ_API_SECRET || process.env.CJ_LOGISTICS_API_SECRET || "";
-  const customerId = process.env.CJ_CUSTOMER_ID || process.env.CJ_LOGISTICS_CUSTOMER_ID || "";
-  const contractId = process.env.CJ_CONTRACT_ID || process.env.CJ_LOGISTICS_CONTRACT_ID || "";
-
-  const apiKeyHeader = process.env.CJ_API_KEY_HEADER || "";
-  if (apiKey && apiKeyHeader) {
-    headers[apiKeyHeader] = apiKey;
-  } else if (apiKey) {
-    const authHeader = process.env.CJ_API_AUTH_HEADER || "Authorization";
-    const authScheme = process.env.CJ_API_AUTH_SCHEME || "Bearer";
-    headers[authHeader] = authScheme ? `${authScheme} ${apiKey}` : apiKey;
-  }
-
-  const secretHeader = process.env.CJ_API_SECRET_HEADER || "";
-  if (apiSecret && secretHeader) {
-    headers[secretHeader] = apiSecret;
-  }
-
-  const customerHeader = process.env.CJ_CUSTOMER_ID_HEADER || "";
-  if (customerId && customerHeader) {
-    headers[customerHeader] = customerId;
-  }
-
-  const contractHeader = process.env.CJ_CONTRACT_ID_HEADER || "";
-  if (contractId && contractHeader) {
-    headers[contractHeader] = contractId;
-  }
-
-  return headers;
 }
 
 function getCjConfig() {
   return {
-    baseUrl: process.env.CJ_API_BASE_URL || process.env.CJ_LOGISTICS_API_BASE_URL || "",
-    pickupEndpoint:
-      process.env.CJ_PICKUP_ENDPOINT ||
-      process.env.CJ_LOGISTICS_PICKUP_ENDPOINT ||
-      DEFAULT_CJ_PICKUP_ENDPOINT,
-    customerId: process.env.CJ_CUSTOMER_ID || process.env.CJ_LOGISTICS_CUSTOMER_ID || "",
-    contractId: process.env.CJ_CONTRACT_ID || process.env.CJ_LOGISTICS_CONTRACT_ID || "",
+    baseUrl:
+      process.env.CJ_API_BASE_URL ||
+      process.env.CJ_LOGISTICS_API_BASE_URL ||
+      "",
+    tokenEndpoint: process.env.CJ_TOKEN_ENDPOINT || DEFAULT_TOKEN_ENDPOINT,
+    invcNoEndpoint: process.env.CJ_INVCNO_ENDPOINT || DEFAULT_INVCNO_ENDPOINT,
+    regBookEndpoint: process.env.CJ_REGBOOK_ENDPOINT || DEFAULT_REGBOOK_ENDPOINT,
+
+    // 고객사코드(CUST_ID/CLNTNUM) + 사업자등록번호(토큰 발급에 필요) — 계약 후 발급
+    custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
+    bizRegNum: process.env.CJ_BIZ_REG_NUM || "",
+
+    // 수취지 = 수북 입고센터 (env 미설정 시 기본값 사용)
     warehouseName:
-      process.env.CJ_WAREHOUSE_NAME ||
-      process.env.SUBOOK_WAREHOUSE_NAME ||
-      "수북 입고센터",
+      process.env.CJ_WAREHOUSE_NAME || process.env.SUBOOK_WAREHOUSE_NAME || "수북",
     warehousePhone:
-      process.env.CJ_WAREHOUSE_PHONE ||
-      process.env.SUBOOK_WAREHOUSE_PHONE ||
-      "",
+      process.env.CJ_WAREHOUSE_PHONE || process.env.SUBOOK_WAREHOUSE_PHONE || "01062715792",
     warehousePostalCode:
-      process.env.CJ_WAREHOUSE_POSTAL_CODE ||
-      process.env.SUBOOK_WAREHOUSE_POSTAL_CODE ||
-      "",
+      process.env.CJ_WAREHOUSE_POSTAL_CODE || process.env.SUBOOK_WAREHOUSE_POSTAL_CODE || "03722",
     warehouseAddressLine1:
       process.env.CJ_WAREHOUSE_ADDRESS_LINE1 ||
       process.env.SUBOOK_WAREHOUSE_ADDRESS_LINE1 ||
-      "",
+      "서울 서대문구 연세로 50",
     warehouseAddressLine2:
       process.env.CJ_WAREHOUSE_ADDRESS_LINE2 ||
       process.env.SUBOOK_WAREHOUSE_ADDRESS_LINE2 ||
-      "",
+      "연세대학교 212동 경영관 209호 이글루",
+
+    // ── 코드성 필드 (RegBook) ──────────────────────────────────────────────
+    // CJ 규격서 샘플 기준 기본값. 한글 코드표가 PDF 폰트 문제로 추출되지 않아,
+    // 정확한 집화/운임 코드는 계약·테스트 시 CJ 확인 후 env로 조정한다.
+    //   RCPT_DV 접수구분(02=방문집화 추정), FRT_DV_CD 운임구분(03=신용/계약),
+    //   CAL_DV_CD 정산구분, CNTR_ITEM_CD 품목, BOX_TYPE_CD 박스규격,
+    //   PRT_ST 출력상태, COD_YN 착불여부, DLV_DV 배송구분, WORK_DV_CD 작업구분.
+    rcptDv: process.env.CJ_RCPT_DV || "02",
+    workDvCd: process.env.CJ_WORK_DV_CD || "01",
+    reqDvCd: process.env.CJ_REQ_DV_CD || "01",
+    calDvCd: process.env.CJ_CAL_DV_CD || "1",
+    frtDvCd: process.env.CJ_FRT_DV_CD || "03",
+    cntrItemCd: process.env.CJ_CNTR_ITEM_CD || "01",
+    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "02",
+    prtSt: process.env.CJ_PRT_ST || "02",
+    codYn: process.env.CJ_COD_YN || "N",
+    dlvDv: process.env.CJ_DLV_DV || "01",
   };
 }
 
@@ -307,160 +315,271 @@ async function requestJsonWithRetry(url, options) {
   throw lastError || new Error("CJ_API_REQUEST_FAILED");
 }
 
-function getPathValue(source, path) {
-  return path.split(".").reduce((current, key) => {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    return current[key];
-  }, source);
+// CJ 응답 래퍼 헬퍼: RESULT_CD가 'S'로 시작하면 성공('S','S200'), 'E'면 실패.
+function isCjSuccess(body) {
+  return String(body?.RESULT_CD || "").toUpperCase().startsWith("S");
 }
 
-function extractFirstString(source, paths) {
-  for (const path of paths) {
-    const value = getPathValue(source, path);
-    if (value !== null && value !== undefined && String(value).trim()) {
-      return String(value).trim();
-    }
-  }
-
-  return "";
+function getCjMessage(body) {
+  return String(body?.RESULT_DETAIL ?? "").trim();
 }
 
-function normalizeTrackingNumber(value) {
-  return String(value || "").replace(/[^0-9A-Za-z]/g, "").trim();
+function makeCjBusinessError(body, fallbackCode) {
+  const error = new Error(getCjMessage(body) || "CJ API returned an error.");
+  error.code = fallbackCode || "CJ_BUSINESS_ERROR";
+  error.statusCode = 502;
+  error.responseBody = body;
+  return error;
 }
 
-function extractTrackingNumber(responseBody) {
-  return normalizeTrackingNumber(
-    extractFirstString(responseBody, [
-      "trackingNumber",
-      "tracking_number",
-      "waybillNo",
-      "waybill_no",
-      "invoiceNo",
-      "invoice_no",
-      "slipNo",
-      "slip_no",
-      "data.trackingNumber",
-      "data.tracking_number",
-      "data.waybillNo",
-      "data.invoiceNo",
-      "data.slipNo",
-      "result.trackingNumber",
-      "result.waybillNo",
-      "result.invoiceNo",
-      "result.slipNo",
-    ]),
-  );
-}
-
-function extractCjRequestId(responseBody) {
-  return extractFirstString(responseBody, [
-    "requestId",
-    "request_id",
-    "receiptNo",
-    "receipt_no",
-    "reservationNo",
-    "reservation_no",
-    "data.requestId",
-    "data.receiptNo",
-    "data.reservationNo",
-    "result.requestId",
-    "result.receiptNo",
-    "result.reservationNo",
-  ]);
-}
-
-function makeMockTrackingNumber(pickupRequest) {
-  const nowDigits = new Date().toISOString().replace(/\D/g, "").slice(2, 12);
-  const idDigits = String(pickupRequest.id || 0).padStart(6, "0").slice(-6);
-  return `${nowDigits}${idDigits}`.slice(-12).padStart(12, "0");
-}
-
-function buildPickupRegistrationPayload(pickupRequest) {
-  const config = getCjConfig();
-  const items = Array.isArray(pickupRequest.pickup_items) ? pickupRequest.pickup_items : [];
-
-  return {
-    customerId: config.customerId || undefined,
-    contractId: config.contractId || undefined,
-    orderNo: pickupRequest.request_number,
-    requestNumber: pickupRequest.request_number,
-    carrier: CJ_CARRIER_NAME,
-    pickup: {
-      name: pickupRequest.pickup_recipient_name,
-      phone: pickupRequest.pickup_recipient_phone,
-      postalCode: pickupRequest.pickup_postal_code,
-      addressLine1: pickupRequest.pickup_address_line1,
-      addressLine2: pickupRequest.pickup_address_line2 || "",
-      memo: pickupRequest.pickup_memo || "",
-    },
-    receiver: {
-      name: config.warehouseName,
-      phone: config.warehousePhone,
-      postalCode: config.warehousePostalCode,
-      addressLine1: config.warehouseAddressLine1,
-      addressLine2: config.warehouseAddressLine2,
-    },
-    parcel: {
-      quantity: 1,
-      itemCount: pickupRequest.item_count || items.length || 1,
-      itemName: items[0]?.title || "수능 교재",
-      items: items.map((item) => ({
-        id: item.id,
-        title: item.title,
-        subject: item.subject,
-        brand: item.brand,
-        bookType: item.book_type,
-        originalPrice: item.original_price,
-      })),
-    },
-  };
-}
-
-async function registerCjPickup(pickupRequest) {
-  if (isMockMode()) {
-    const trackingNumber = makeMockTrackingNumber(pickupRequest);
-    return {
-      trackingNumber,
-      cjRequestId: `MOCK-${pickupRequest.request_number}`,
-      rawResponse: {
-        mock: true,
-        trackingNumber,
-        requestId: `MOCK-${pickupRequest.request_number}`,
-      },
-    };
-  }
-
-  const config = getCjConfig();
-  if (!config.baseUrl) {
+async function postCj(cfg, endpoint, data) {
+  if (!cfg.baseUrl) {
     const error = new Error("CJ_API_BASE_URL is required. Set CJ_LOGISTICS_MOCK=true for local mock mode.");
     error.code = "CJ_CONFIG_MISSING";
     error.statusCode = 500;
     throw error;
   }
 
-  const url = joinUrl(config.baseUrl, config.pickupEndpoint);
-  const payload = buildPickupRegistrationPayload(pickupRequest);
-  const { body } = await requestJsonWithRetry(url, {
+  const { body } = await requestJsonWithRetry(joinUrl(cfg.baseUrl, endpoint), {
     method: "POST",
     headers: buildCjHeaders(),
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ DATA: data }),
   });
 
-  const trackingNumber = extractTrackingNumber(body);
-  if (!trackingNumber) {
-    const error = new Error("CJ API response did not include a tracking number.");
-    error.code = "CJ_EMPTY_TRACKING_NUMBER";
+  return body;
+}
+
+// 1Day 토큰 발급: { DATA: { CUST_ID, BIZ_REG_NUM } } → DATA.TOKEN_NUM
+async function getOneDayToken(cfg) {
+  if (isMockMode()) {
+    return `MOCK-TOKEN-${Date.now()}`;
+  }
+
+  if (!cfg.custId) {
+    const error = new Error("CJ_CUST_ID(고객사코드)가 설정되지 않았습니다.");
+    error.code = "CJ_CUST_ID_MISSING";
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const body = await postCj(cfg, cfg.tokenEndpoint, {
+    CUST_ID: cfg.custId,
+    BIZ_REG_NUM: cfg.bizRegNum,
+  });
+
+  if (!isCjSuccess(body)) {
+    throw makeCjBusinessError(body, "CJ_TOKEN_FAILED");
+  }
+
+  const token = String(body?.DATA?.TOKEN_NUM || "").trim();
+  if (!token) {
+    const error = new Error("CJ 토큰 응답에 TOKEN_NUM이 없습니다.");
+    error.code = "CJ_TOKEN_EMPTY";
     error.statusCode = 502;
     error.responseBody = body;
     throw error;
   }
 
+  return token;
+}
+
+// 채번(운송장번호 생성): { DATA: { CLNTNUM, TOKEN_NUM } } → DATA.INVC_NO
+async function reqInvcNo(cfg, token) {
+  const body = await postCj(cfg, cfg.invcNoEndpoint, {
+    CLNTNUM: cfg.custId,
+    TOKEN_NUM: token,
+  });
+
+  if (!isCjSuccess(body)) {
+    throw makeCjBusinessError(body, "CJ_INVCNO_FAILED");
+  }
+
+  const rawInvc = body?.DATA?.INVC_NO;
+  const invcNo = String(Array.isArray(rawInvc) ? rawInvc[0]?.INVC_NO ?? rawInvc[0] : rawInvc || "").trim();
+  if (!invcNo) {
+    const error = new Error("CJ 채번 응답에 INVC_NO가 없습니다.");
+    error.code = "CJ_INVCNO_EMPTY";
+    error.statusCode = 502;
+    error.responseBody = body;
+    throw error;
+  }
+
+  return invcNo;
+}
+
+// 전화번호를 CJ 규격(3분할: NO1/NO2/NO3)으로 분리.
+function splitPhone(rawPhone) {
+  const digits = String(rawPhone || "").replace(/\D/g, "");
+  if (!digits) {
+    return { n1: "", n2: "", n3: "" };
+  }
+
+  // 010-XXXX-XXXX(11) / 02-XXX(X)-XXXX(9~10) / 0XX-XXX(X)-XXXX 처리
+  if (digits.startsWith("02")) {
+    const rest = digits.slice(2);
+    const tail = rest.slice(-4);
+    const mid = rest.slice(0, -4);
+    return { n1: "02", n2: mid, n3: tail };
+  }
+
+  if (digits.length === 11) {
+    return { n1: digits.slice(0, 3), n2: digits.slice(3, 7), n3: digits.slice(7) };
+  }
+  if (digits.length === 10) {
+    return { n1: digits.slice(0, 3), n2: digits.slice(3, 6), n3: digits.slice(6) };
+  }
+
+  // 형식 불명 — 앞 3자리 / 나머지 분할 (best effort)
+  return { n1: digits.slice(0, 3), n2: digits.slice(3, digits.length - 4), n3: digits.slice(-4) };
+}
+
+// KST(UTC+9) 기준 오늘 YYYYMMDD (서버리스는 UTC로 동작하므로 보정).
+function kstYmd(date = new Date()) {
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+// 'YYYY-MM-DD' (DATE 컬럼) → 'YYYYMMDD'
+function dateToYmd(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const digits = text.replace(/[^0-9]/g, "");
+  return digits.length >= 8 ? digits.slice(0, 8) : "";
+}
+
+// 수거 품목(ARRAY) 구성. 신규 정책상 pickup_items가 비어있을 수 있어 요약 1줄로 대체.
+function buildGoodsArray(pickupRequest) {
+  const items = Array.isArray(pickupRequest.pickup_items) ? pickupRequest.pickup_items : [];
+  if (items.length > 0) {
+    return items.map((item, index) => ({
+      MPCK_SEQ: String(index + 1),
+      GDS_CD: String(item.id ?? index + 1),
+      GDS_NM: String(item.title || "중고 교재").slice(0, 100),
+      GDS_QTY: "1",
+      UNIT_CD: "EA",
+      UNIT_NM: "권",
+      GDS_AMT: String(item.original_price ?? 0),
+    }));
+  }
+
+  const qty = Number(pickupRequest.expected_book_count) || Number(pickupRequest.item_count) || 1;
+  return [
+    {
+      MPCK_SEQ: "1",
+      GDS_CD: "BOOK",
+      GDS_NM: `중고 교재 ${qty}권`,
+      GDS_QTY: String(qty),
+      UNIT_CD: "EA",
+      UNIT_NM: "권",
+      GDS_AMT: "0",
+    },
+  ];
+}
+
+// 예약접수(RegBook) 바디 구성. 발송인(SENDR)=셀러, 수취인(RCVR)=수북 입고센터.
+function buildRegBookPayload(pickupRequest, { token, invcNo, cfg }) {
+  const sender = splitPhone(pickupRequest.pickup_recipient_phone);
+  const warehouse = splitPhone(cfg.warehousePhone);
+  const boxQty = Math.max(1, Number(pickupRequest.box_count) || 1);
+  const colctYmd = dateToYmd(pickupRequest.desired_pickup_date) || kstYmd();
+
   return {
-    trackingNumber,
-    cjRequestId: extractCjRequestId(body) || null,
+    CUST_ID: cfg.custId,
+    TOKEN_NUM: token,
+    RCPT_YMD: kstYmd(),
+    CUST_USE_NO: pickupRequest.request_number, // 고객사용번호(주문/멱등 키)
+    RCPT_DV: cfg.rcptDv,
+    WORK_DV_CD: cfg.workDvCd,
+    REQ_DV_CD: cfg.reqDvCd,
+    MPCK_KEY: pickupRequest.request_number,
+    CAL_DV_CD: cfg.calDvCd,
+    FRT_DV_CD: cfg.frtDvCd,
+    CNTR_ITEM_CD: cfg.cntrItemCd,
+    BOX_TYPE_CD: cfg.boxTypeCd,
+    BOX_QTY: String(boxQty),
+    FRT: "0",
+    CUST_MGMT_DLCM_CD: cfg.custId,
+
+    // 발송인 = 셀러 (집화 대상)
+    SENDR_NM: pickupRequest.pickup_recipient_name || "",
+    SENDR_TEL_NO1: sender.n1,
+    SENDR_TEL_NO2: sender.n2,
+    SENDR_TEL_NO3: sender.n3,
+    SENDR_CELL_NO1: sender.n1,
+    SENDR_CELL_NO2: sender.n2,
+    SENDR_CELL_NO3: sender.n3,
+    SENDR_ZIP_NO: pickupRequest.pickup_postal_code || "",
+    SENDR_ADDR: pickupRequest.pickup_address_line1 || "",
+    SENDR_DETAIL_ADDR: pickupRequest.pickup_address_line2 || "",
+
+    // 수취인 = 수북 입고센터
+    RCVR_NM: cfg.warehouseName,
+    RCVR_TEL_NO1: warehouse.n1,
+    RCVR_TEL_NO2: warehouse.n2,
+    RCVR_TEL_NO3: warehouse.n3,
+    RCVR_CELL_NO1: warehouse.n1,
+    RCVR_CELL_NO2: warehouse.n2,
+    RCVR_CELL_NO3: warehouse.n3,
+    RCVR_ZIP_NO: cfg.warehousePostalCode,
+    RCVR_ADDR: cfg.warehouseAddressLine1,
+    RCVR_DETAIL_ADDR: cfg.warehouseAddressLine2,
+
+    // 주문자 = 셀러
+    ORDRR_NM: pickupRequest.pickup_recipient_name || "",
+    ORDRR_TEL_NO1: sender.n1,
+    ORDRR_TEL_NO2: sender.n2,
+    ORDRR_TEL_NO3: sender.n3,
+    ORDRR_CELL_NO1: sender.n1,
+    ORDRR_CELL_NO2: sender.n2,
+    ORDRR_CELL_NO3: sender.n3,
+    ORDRR_ZIP_NO: pickupRequest.pickup_postal_code || "",
+    ORDRR_ADDR: pickupRequest.pickup_address_line1 || "",
+    ORDRR_DETAIL_ADDR: pickupRequest.pickup_address_line2 || "",
+
+    INVC_NO: invcNo, // 채번에서 받은 운송장번호
+    COLCT_EXPCT_YMD: colctYmd, // 집화(수거) 예정일
+    PRT_ST: cfg.prtSt,
+    ARTICLE_AMT: "0",
+    REMARK_1: String(pickupRequest.pickup_memo || "").slice(0, 100),
+    COD_YN: cfg.codYn,
+    DLV_DV: cfg.dlvDv,
+    ARRAY: buildGoodsArray(pickupRequest),
+  };
+}
+
+function makeMockTrackingNumber(pickupRequest) {
+  const nowDigits = kstYmd().slice(2) + String(Date.now()).slice(-4);
+  const idDigits = String(pickupRequest.id || 0).padStart(6, "0").slice(-6);
+  return `${nowDigits}${idDigits}`.slice(-12).padStart(12, "0");
+}
+
+async function registerCjPickup(pickupRequest, { token, cfg }) {
+  if (isMockMode()) {
+    const trackingNumber = makeMockTrackingNumber(pickupRequest);
+    return {
+      trackingNumber,
+      cjRequestId: `MOCK-${pickupRequest.request_number}`,
+      rawResponse: { mock: true, RESULT_CD: "S", trackingNumber },
+    };
+  }
+
+  // 1) 채번 → 운송장번호 확보
+  const invcNo = await reqInvcNo(cfg, token);
+
+  // 2) 예약접수
+  const payload = buildRegBookPayload(pickupRequest, { token, invcNo, cfg });
+  const body = await postCj(cfg, cfg.regBookEndpoint, payload);
+
+  if (!isCjSuccess(body)) {
+    throw makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+  }
+
+  // RegBook 성공 응답은 INVC_NO를 돌려주지 않으므로 우리가 채번한 번호가 곧 운송장.
+  return {
+    trackingNumber: invcNo,
+    cjRequestId: invcNo,
     rawResponse: body,
   };
 }
@@ -508,7 +627,17 @@ function normalizeIds(value) {
   ];
 }
 
-async function processPickupRegistration({ supabase, pickupRequestId, force }) {
+function makeFailedResult(pickupRequestId, error) {
+  return {
+    pickupRequestId,
+    success: false,
+    status: "failed",
+    error: getErrorDetail(error) || "CJ 수거 접수에 실패했습니다.",
+    code: error?.code || "CJ_PICKUP_FAILED",
+  };
+}
+
+async function processPickupRegistration({ supabase, pickupRequestId, force, token, cfg }) {
   const pickupRequest = await getPickupRequest(supabase, pickupRequestId);
   if (!pickupRequest) {
     return {
@@ -543,7 +672,7 @@ async function processPickupRegistration({ supabase, pickupRequestId, force }) {
   }
 
   try {
-    const cjResult = await registerCjPickup(pickupRequest);
+    const cjResult = await registerCjPickup(pickupRequest, { token, cfg });
     const registeredAt = new Date().toISOString();
     const { error: updateError } = await supabase
       .from("pickup_requests")
@@ -593,10 +722,7 @@ async function processPickupRegistration({ supabase, pickupRequestId, force }) {
     return {
       pickupRequestId,
       requestNumber: pickupRequest.request_number,
-      success: false,
-      status: "failed",
-      error: getErrorDetail(error) || "CJ 수거 접수에 실패했습니다.",
-      code: error?.code || "CJ_PICKUP_FAILED",
+      ...makeFailedResult(pickupRequestId, error),
     };
   }
 }
@@ -657,13 +783,29 @@ export default async function handler(req, res) {
       );
     }
 
+    // 1Day 토큰은 한 번만 발급해 배치 전체에서 재사용한다.
+    const cfg = getCjConfig();
+    let token = null;
+    let tokenError = null;
+    try {
+      token = await getOneDayToken(cfg);
+    } catch (error) {
+      tokenError = error;
+    }
+
     const results = [];
     for (const pickupRequestId of pickupRequestIds) {
+      if (tokenError) {
+        results.push(makeFailedResult(pickupRequestId, tokenError));
+        continue;
+      }
       results.push(
         await processPickupRegistration({
           supabase,
           pickupRequestId,
           force: Boolean(body.force),
+          token,
+          cfg,
         }),
       );
     }

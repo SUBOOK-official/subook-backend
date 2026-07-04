@@ -143,7 +143,9 @@ function getCjConfig() {
       process.env.CJ_LOGISTICS_TRACKING_ENDPOINT ||
       DEFAULT_TRACKING_ENDPOINT,
     custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
-    bizRegNum: process.env.CJ_BIZ_REG_NUM || "",
+    // ⚠ CJ는 사업자번호를 숫자만으로 조회 — 하이픈 포함 시 "고객사코드가 존재하지
+    //   않습니다" 오해성 에러(2026-07-03 실측). 형식 무관 정규화.
+    bizRegNum: String(process.env.CJ_BIZ_REG_NUM || "").replace(/\D/g, ""),
   };
 }
 

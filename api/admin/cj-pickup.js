@@ -206,7 +206,9 @@ function getCjConfig() {
 
     // 고객사코드(CUST_ID/CLNTNUM) + 사업자등록번호(토큰 발급에 필요) — 계약 후 발급
     custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
-    bizRegNum: process.env.CJ_BIZ_REG_NUM || "",
+    // ⚠ CJ는 사업자번호를 숫자만으로 조회한다. 하이픈 포함 시 "입력하신 고객사코드가
+    //   존재하지 않습니다"라는 오해성 에러가 난다(2026-07-03 실측) — 형식 무관 정규화.
+    bizRegNum: String(process.env.CJ_BIZ_REG_NUM || "").replace(/\D/g, ""),
 
     // 수취지 = 수북 입고센터 (env 미설정 시 기본값 사용)
     warehouseName:

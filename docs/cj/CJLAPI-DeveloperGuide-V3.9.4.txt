@@ -1,0 +1,2241 @@
+
+===== PAGE 1 =====
+CJ대한통운의 사전 승인 없이 본 내용의 전부 또는 일부에 대한 복사, 전재, 배포, 사용을 금합니다 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+[API]CJ대한통운 택배 표준 API 
+ 
+Developer Guide 
+ 
+Ver. 3.9.4 
+ 
+ 
+ 
+ 
+  
+  
+===== PAGE 2 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+2 / 52 
+목     차 
+1.1. 소개 ....................................................................................................................... 3 
+1.1.1. 개요 ............................................................................................................................................................................. 3 
+1.1.2. API 프로세스 ............................................................................................................................................................ 3 
+1.1.3. API Token 개요 ....................................................................................................................................................... 3 
+1.2. 비지니스 규칙(API 사용되는 택배 업무 기초 코드) ..................................................... 4 
+1.2.1. 화물 상태 기초 코드 ............................................................................................................................................. 4 
+1.2.2. 미집화 사유 기초 코드 ......................................................................................................................................... 4 
+1.2.3. 미배송 사유 기초 코드 ......................................................................................................................................... 5 
+1.2.4. 박스 타입 기초코드 ............................................................................................................................................... 5 
+1.3. 시스템 인터페이스 ................................................................................................... 6 
+1.3.1. 기본사항 .................................................................................................................................................................... 6 
+1.3.2. 인터페이스 세부 ..................................................................................................................................................... 6 
+1.3.3. 1Day 토큰 발행 ....................................................................................................................................................... 8 
+1.3.4. (공통)주소 정제 API ............................................................................................................................................ 10 
+1.3.5. (공통)상품추적(운송장 번호 기준) API .......................................................................................................... 12 
+1.3.6. 운송장 번호 생성 API ......................................................................................................................................... 14 
+1.3.7. (일반)예약 접수 API ............................................................................................................................................ 15 
+1.3.8. (일반)상품추적(예약정보기준) API .................................................................................................................. 21 
+1.3.9. (일반)상품추적(예약정보기준) 수신여부 확정 API ................................................................................... 24 
+1.3.10. (일반)예약취소 API ............................................................................................................................................ 25 
+1.3.11. (중개)예약 접수 API .......................................................................................................................................... 30 
+1.3.12. (중개)상품추적(예약 정보 기준) .................................................................................................................... 36 
+1.3.13. (중개)상품추적대량(예약 정보 기준)  수신 여부 확정 ......................................................................... 39 
+1.3.14. (중개)예약취소 API ............................................................................................................................................ 40 
+1.3.15. 운영 승인 요청 작업 ......................................................................................................................................... 45 
+1.4. 자주하는 질문 (FAQ) ............................................................................................. 46 
+1.4.1. 개발 1Day 토큰 API 호출 시 고객사 코드가 존재하지 않음 메시지 발생 ...................................... 46 
+1.4.2. 사업자 등록 번호 수정 방법 ............................................................................................................................ 47 
+1.4.3. 회원가입에서 메일로 인증번호가 오지 않는 경우 ................................................................................... 48 
+1.4.4. POSTMAN 샘플 파일 .......................................................................................................................................... 48 
+1.4.5. 운영 연동 승인 절차는 어떻게 되나요? ...................................................................................................... 50 
+1.4.6. 기존 Interface 방식과 API 서비스를 병행 처리 하는 것이 가능한가요? ........................................ 50 
+1.4.7. 중개 업체를 이용하는 업체입니다. API 서비스 이용 병행 사용하고 싶습니다. ............................ 50 
+1.4.8. 운송장 출력 샘플 제작 및 검증 절차에 대하여 문의 드립니다. ........................................................ 51 
+1.4.9. 운송장 번호 생성 API 관련 문의 사항 ......................................................................................................... 52 
+1.4.10. 예약 접수 API 관련 문의 사항 ..................................................................................................................... 52 
+===== PAGE 3 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+3 / 52 
+1.1. 소개 
+1.1.1. 개요 
+본 문서는 택배 고객사의 원활한 업무 지원을 위해 API를 제공하기 위하여 API사용에 대한 정보를 제공합니다. 
+1.1.2. API 프로세스 
+ 
+택배 계약 후 발급된 고객ID(고객사코드)와 사업자번호를 사용하여 개발 테스트가 가능합니다. 
+만약 계약이 체결되었는데도 고객코드 오류 현상이 있거나 계약 전이어서 아직 고객코드가 발급되지 않은 
+경우에는 OpenAPI@cjlogistics.com 으로 메일 부탁드립니다. 
+** 계약지사을 통하여 개발 요청(SR)이 접수되어야 개발 테스트 및 시스템 오픈 지원이 가능합니다 
+1.1.3. API Token 개요 
+ 
+Token 유효시간은 24시간 입니다. (24시간 이후 사용 불가로 재발급 받으셔야 합니다.) 
+
+===== PAGE 4 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+4 / 52 
+1.2. 비지니스 규칙(API 사용되는 택배 업무 기초 코드) 
+1.2.1. 화물 상태 기초 코드 
+기초코드 기초코드 명 
+01 집화지시 
+11 집화처리 
+12 미집화 
+41 간선상차 
+42 간선하차 
+82 배송출발 
+84 미배송 
+91 배송완료 
+ ※ 화물상태는 고객사에서 원하는 값만 전달 가능합니다. (현업 담당자와 협의하시기 바랍니다) 
+1.2.2. 미집화 사유 기초 코드 
+기초코드 기초코드 명 
+49 집화 이관 
+02 업체 미출고 
+03 기집화 
+01 재고 부족 
+06 타택배 
+07 천재지변 
+08 주문취소 (일반건) 
+09 집배구역 불일치 
+11 집화 예정 
+12 토요 휴무 
+13 취급불가/규격외품 
+14 반품취소/거부 
+16 고객 사용중 
+17 지정일 회수 
+18 고객 부재 
+21 고객정보오류 
+22 교환물건 미도착 
+23 회수건 없음 (업체오류) 
+25 통화 안됨 (4 일이상) 
+26 합포장 (미사용) 
+33 시간부족 
+34 차량고장 
+35 포장 미비 
+===== PAGE 5 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+5 / 52 
+38 도서/외곽지역 
+44 중복 예약 
+48 기타 2 
+50 보내는분 요청 
+51 받는분 요청 
+ 
+1.2.3. 미배송 사유 기초 코드 
+기초코드 기초코드 명 
+01 고객정보 오류 
+02 고객 부재 
+05 지연 도착 
+06 분류 오류 
+08 통화 불가능 
+09 수취 거부 
+11 천재 지변 
+16 착지 변경 
+21 상품 사고 (파손/분실) 
+24 지정일 배송 
+32 차량고장/사고 
+33 도서/외곽지역 
+42 특판 잔류 
+55 결재 불가 
+56 배송전 취소 
+ 
+1.2.4. 박스 타입 기초코드 
+영문명 한글명 상세 기초코드 
+A 극소 80cm / 2kg 이하 01 
+B 소 100cm / 5kg 이하 02 
+C 중 120cm / 10kg 이하 03 
+D1 대 1 140cm / 15kg 이하 04 
+D2 대 2 160cm / 20kg 이하 07 
+E 이형 190cm / 25kg 이하 05 
+F 취급제한  06 
+ 
+  
+===== PAGE 6 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+6 / 52 
+1.3. 시스템 인터페이스 
+1.3.1. 기본사항 
+1) 통신 규약 : REST 
+2) 한글 Encoding 방식은 UTF-8 방식 사용 
+1.3.2. 인터페이스 세부 
+헤더공
+통 
+CJ-Gateway-APIKey : 332d248e-ed7c-470c-8732-
+ccb223b93be2(예시) 
+Content-Type : application/json 
+Accept : application/json 
+1. 1Day 토큰 발행의 경우 Key 생략 
+2. 기타 API 는 ReqOneDayToken 에서 발행된 토큰번호 
+사용해서 API 요청 
+ 
+업무 인터페이스 항목 인터페이스 서비스 
+공통 
+1Day 토큰발행 (24시간 유효) 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqOneDayToken 
+운영 : https://dxapi.cjlogistics.com:5052/ReqOneDayToken 
+주소정제 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqAddrRfnSm 
+운영 : https://dxapi.cjlogistics.com:5052/ReqAddrRfnSm 
+상품추적 (운송장 번호 기준) 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqOneGdsTrc 
+운영 : https://dxapi.cjlogistics.com:5052/ReqOneGdsTrc 
+운송장 번호 생성 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqInvcNo 
+운영 : https://dxapi.cjlogistics.com:5052/ReqInvcNo 
+일반업체 
+(일반)예약 접수 
+개발 : https://dxapi-dev.cjlogistics.com:5054/RegBook 
+운영 : https://dxapi.cjlogistics.com:5052/RegBook 
+(일반)상품추적 (예약 정보 기준) 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqMssGdsTrc 
+운영 : https://dxapi.cjlogistics.com:5052/ReqMssGdsTrc 
+(일반)상품추적 (예약정보 기준) 수신여부 확정 
+개발 : https://dxapi-dev.cjlogistics.com:5054/RcvMssGdsTrcCnfrm 
+운영 : https://dxapi.cjlogistics.com:5052/RcvMssGdsTrcCnfrm 
+(일반)예약 취소 
+개발 : https://dxapi-dev.cjlogistics.com:5054/CnclBook 
+운영 : https://dxapi.cjlogistics.com:5052/CnclBook 
+중개업체 
+(중개)예약 접수 
+개발 : https://dxapi-dev.cjlogistics.com:5054/RegBrkrBook 
+운영 : https://dxapi.cjlogistics.com:5052/RegBrkrBook 
+(중개)상품추적 (예약 정보 기준) 
+개발 : https://dxapi-dev.cjlogistics.com:5054/ReqBrkrMssGdsTrc 
+운영 : https://dxapi.cjlogistics.com:5052/ReqBrkrMssGdsTrc 
+(중개)상품추적 (예약 정보기준) 수신 여부 확정  
+개발 : https://dxapi-dev.cjlogistics.com:5054/RcvBrkrMssGdsTrcCnfrm 
+운영 : https://dxapi.cjlogistics.com:5052/RcvBrkrMssGdsTrcCnfrm 
+(중개)예약 취소 
+개발 : https://dxapi-dev.cjlogistics.com:5054/CnclBrkrBook 
+운영 : https://dxapi.cjlogistics.com:5052/CnclBrkrBook 
+ 
+  
+===== PAGE 7 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+7 / 52 
+⚫ 공통 오류 
+ 
+HTTP Code 
+설정 응답 
+데이터 포맷 
+ 설정 내용 (json 기준) 
+200 xml, json 
+레거시 정상 응답 회신. EAI 또는 WAS 의 서비스에서 표준 포맷(아래예시)으로 응답 정보 회신 
+ { "RESULT_CD" : "S200", "RESULT_DETAIL":"정상 수행 되었습니다." } 
+ { "RESULT_CD" : "S200", "RESULT_DETAIL":[{"key":"value"}...] } 
+400 xml, json 
+{ "RESULT_CD" : "E400", "RESULT_DETAIL":" Bad Request (파라미터가 잘못되었거나, 요청문이 
+잘못되었습니다.)" } 
+401 xml, json 
+{ "RESULT_CD" : "E401", "RESULT_DETAIL":"Authentication failed (인증에 실패했습니다.). 발급된 
+인증키를 확인 해주세요." } 
+인증 실패 시에는 시스템 내 저장된 기존 토큰을 폐기하고, 1 시간 후 ReqOneDayToken(토큰 발행 
+API)을 호출하여 토큰을 재발급받아 요청을 재시도 하십시오. 
+ * 토큰 발급 시 1 초에 2 회 이상 요청할 경우 비정상적인 접근(디도스 공격 등의)으로 인지하여, 
+토큰 발급이 일정시간 차단됩니다. 
+ * 인증 실패 발생 시 일정 간격 (1 분 이상) 이후 자동으로 재발급하는 로직 적용을 추천 드립니다.  
+403 xml, json { "RESULT_CD" : "E403", "RESULT_DETAIL":"Forbidden (호출권한이 없습니다.)" } 
+404 xml, json { "RESULT_CD" : "E404", "RESULT_DETAIL":"Not Found (검색 결과가 없습니다.)" } 
+429 xml, json { "RESULT_CD" : "E429", "RESULT_DETAIL":"Too Many Requests (호출 한도가 초과 되었습니다.)" } 
+500 xml, json 
+{ "RESULT_CD" : "E500", "RESULT_DETAIL":"Internal Server Error (서버 내부 에러가 발생했습니다. 
+관리자에게 문의 바랍니다.)" } 
+ 
+⚫ 에러 메시지 안내 
+ "RESULT_CD" : "E", "RESULT_DETAIL":"계약 점소 사정으로 API 접근이 제한 되었습니다. 택배 계약 대리점(집화점)에 문의하여 
+주시기 바랍니다."} 
+  → 고객사 여신 초과 또는 집배점 사정으로 의심되오니 계약 대리점에 확인 바랍니다. 
+ "RESULT_CD" : "E", "RESULT_DETAIL":"택배 계약 내역이 존재하지 않습니다. 재 확인 요청 드립니다"} 
+  → 아직 계약 개시일 전이거나 계약일이 종료 되었을 수 있습니다. 계약 대리점에 확인 요청 드립니다. 
+ 
+※ 토큰 오류와 관련하여 1 시간 간격으로 차단 해제 스케줄이 수행되나 긴급한 처리가 필요한 경우에는 아래와 같이 
+처리(문의) 바랍니다. 
+    - openapi@cjlogistics.com EAI 팀 전체메일 공유와 각 사별 대응 담당자 유선연락을 통해 지원 요청. 
+===== PAGE 8 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+8 / 52 
+1.3.3. 1Day 토큰 발행 
+ 
+ 
+1) 전송 주기: 일 단위, 수시 가능 
+2) 대한통운에서 제공하는 서비스를 사용하기 위한 유효기간 1일인 보안 토큰 발행 
+   (24시간이 경과하기 전에 토큰 발행 요청을 하시면 기존 발급된 토큰을 다시 전달 합니다, 유효 시간은 기존과 동일) 
+   * 24시간마다 Token발급이후에 시스템에 저장 후 사용하시기 바랍니다. 
+   * 토큰 발급 시 1초에 1회이상 요청할 경우 비정상적인 접근으로 인하여 토큰 발급이 일정시간 차단됩니다. 
+3) 기준: 대한통운 계약 및 여신 검증 통과 고객 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+  
+인터페이스명 1Day 토큰 발행 
+인터페이스설명 대한통운에서 제공하는 서비스를 사용하기 위한 유효기간 1일인 보안 토큰 발행 
+Resource명 ReqOneDayToken Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json (Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+BIZ_REG_NUM 사업자 번호 고객ID에 해당하는 청구 사업자 번호 VARCHAR2(10) NOT NULL 
+USER_ID 중개업체 ID 
+중개업체 사용 시 필수 
+중개업체 계정(대한통운 담당자와 협의) 
+VARCHAR2(20)  
+ 
+
+===== PAGE 9 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+9 / 52 
+리턴매개변수 
+ 
+ 
+※ 토큰 만료 기간이 남아 있을 경우 OneDayToken을 다시 시도하면 기존에 발행이 되었던 토큰을 다시 
+전달하고 토큰만료시간도 이전에 발행되었던 값을 전달합니다. 
+  
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과 코드 조회 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과 상세 실패 시 에러 내용 VARCHAR2(5000) 
+TOKEN_NUM 토큰번호 유효기간 1일인 보안토큰 (CJ-Gateway-APIKey 동일 값 기술) VARCHAR2(40) 
+TOKEN_EXPRTN_DTM 토큰만료시간 
+발행 된 토큰의 만료시간. 해당 시간 30분전부터 해당시간까지
+사이에 1Day 토큰 발행 요청시 토큰이 갱신 됨 
+(format:YYYYMMDDHHMMSS)  
+NOTICE 공지사항 공지사항이 있을 경우만 해당 파라미터 리턴 됨 VARCHAR2(200) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "BIZ_REG_NUM":"사업자번호를 넣어 주세요" 
+} 
+} 
+SAMPLE – OUTPUT 
+{ 
+    "RESULT_CD": "S", 
+    "RESULT_DETAIL": "Success", 
+    "DATA": { 
+        "TOKEN_NUM": "23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+"TOKEN_ EXPRTN_DTM ": "20210327141012", 
+        "NOTICE": "3월14일 00:00~03:00 PM작업 예정. 채번, 주소정제 외 사용 불가", 
+    } 
+} 
+ 
+===== PAGE 10 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+10 / 52 
+1.3.4. (공통)주소 정제 API 
+1) 전송 주기: 수시 
+2) 고객사 주소 정보를 정제하여 권역 정보와 함께 제공  
+3) 기준: 주소 정보 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+  
+인터페이스명 주소정제 
+인터페이스설명 고객사 주소 정보를 정제하여 권역 정보와 함께 제공 
+Resource명 ReqAddrRfnSm Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CLNTNUM 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+CLNTMGMCUSTCD 협력사 코드 협력사코드가 없을 경우 고객ID로 대체 VARCHAR2(20)  
+USER_ID 중개업체ID 
+중개업체 사용 시 필수 
+중개업체 계정(대한통운 담당자와 협의) 
+VARCHAR2(20)  
+ADDRESS 주소  VARCHAR2(100) NOT NULL 
+ 
+리턴매개변수 
+ 
+ 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과 코드 업데이트 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과 상세 실패 시 에러내용 VARCHAR2(5000) 
+CLSFCD 도착지 코드  VARCHAR2(20) 
+SUBCLSFCD 도착지 서브 코드  VARCHAR2(20) 
+CLSFADDR 주소 약칭  VARCHAR2(100) 
+CLLDLVBRANNM 배송집배점 명  VARCHAR2(100) 
+CLLDLVEMPNM 배송SM명  VARCHAR2(100) 
+CLLDLVEMPNICKNM SM분류코드  VARCHAR2(100) 
+RSPSDIV 권역 구분  VARCHAR2(3) 
+P2PCD P2P코드  VARCHAR2(4) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "CLNTNUM":"계약된 고객ID를 넣어 주세요", 
+      "CLNTMGMCUSTCD":"계약된 고객ID를 넣어 주세요", 
+"ADDRESS":"서울특별시 중구 세종대로 9길 53 대한통운 12층", 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z" 
+   } 
+} 
+===== PAGE 11 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+11 / 52 
+ 
+⚫ 주소정제 오류 
+RESULT_CD  오류 내용 
+S 정제 성공 
+-20000 입력파라미터 중 코드 값이 잘못되어 있을 때 발생하는 오류입니다. 
+-20001 CJ 대한통운에 등록되지 않은 고객 ID 입니다. 
+-20002 입력하신 주소에 대한 분석에 실패한 경우입니다. 
+-20003 입력하신 주소에 대해 집배권역(집화 및 배송대리점)의 설정값을 찾지 못한 경우입니다. 
+-20004 집배권역에서 반환된 점소정보가 폐점이나 사용중지 된 점소일 경우 반환되는 값입니다. 
+-20005 배송이나 집화를 처리해 주어야 하는 사원이 설정되지 않은 경우 반환되는 값입니다. 
+-20006 허브터미널에서 분류를 하기 위한 도착지 코드 추출에 실패한 경우 반환되는 값입니다. 
+-20007 서버터미널에서 분류를 하기 위한 분류주소 추출에 실패한 경우 반환되는 값입니다. 
+-20008 고객 ID 에 대한 CJ 대한통운과의 계약이 만료되었거나, 계약이 존재하지 않은 경우 반환되는 값입니다. 
+-20009 입력하신 주소지에 대해 배송이 불가능한 경우 입니다. (자세한 내용은 대한통운 담당자에게 문의해주시기 바랍니다.) 
+-20010 
+배송지연 발생가능 지역에 대해 반환되는 값입니다. (특수케이스로 자세한 내용은 대한통운 담당자에게 문의해주시기 
+바랍니다.) 
+ 
+  
+SAMPLE – OUTPUT 
+{ 
+    "RESULT_CD": "S", 
+    "RESULT_DETAIL": "Success", 
+    "DATA": { 
+        "CLSFCD": "5D32", 
+        "SUBCLSFCD": "1g", 
+        "CLSFADDR": "서소문 58-12 대한통운", 
+        "CLLDLVBRANNM": "중구소공", 
+        "CLLDLVEMPNM": "##", 
+        "CLLDLVEMPNICKNM": “G03-01’, 
+        "RSPSDIV": "01", 
+        "P2PCD": null 
+    } 
+} 
+===== PAGE 12 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+12 / 52 
+1.3.5. (공통)상품추적(운송장 번호 기준) API 
+1) 전송 주기: 수시 
+2) 운송장 번호를 기준으로 단건의 상품추적 정보 제공 
+3) 기준: 고객사에서 상품추적을 원하는 운송장 번호 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 상품추적 단건 
+인터페이스설명 운송장 번호를 기준으로 상품추적 정보 제공 
+Resource명 ReqOneGdsTrc Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CLNTNUM 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+USER_ID 중개업체 ID 
+중개업체 사용시 필수 
+중개업체 계정(대한통운 담당자와 협의) 
+VARCHAR2(20) 
+ 
+INVC_NO 운송장 번호   VARCHAR2(20) NOT NULL 
+ 
+리턴매개변수 
+ 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과 코드 조회 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과 상세 실패 시 에러내용 VARCHAR2(5000) 
+INVC_NO 운송장 번호 
+ARRAY[] 
+VARCHAR(20) 
+CRG_ST 
+화물상태 
+(1.2.1참조) 
+VARCHAR2(2) 
+CRG_ST_NM 화물상태 명 VARCHAR2(50) 
+SCAN_YMD 스캔 일자 VARCHAR(8) 
+SCAN_HOUR 스캔 시간 VARCHAR(6) 
+DEALT_BRAN_NM 처리점소 명 VARCHAR2(100) 
+DEALT_BRAN_TEL 처리점소 전화 VARCHAR2(15) 
+DEALT_EMP_NM 처리사원 명 VARCHAR2(100) 
+DEALT_EMP_TEL 처리사원 전화 VARCHAR2(15) 
+ACPTR_NM 인수자명 VARCHAR2(100) 
+SAMPLE – INPUT (Success Case) 
+{ 
+   "DATA":{ 
+      "CLNTNUM":"계약된 고객ID를 넣어 주세요", 
+"INVC_NO":"636826218033", 
+  "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z" 
+   } 
+} 
+===== PAGE 13 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+13 / 52 
+ 
+* 주의사항  
+해당 API 는 전체 접수 건에 대한 추적정보를 획득하려는 용도로는 적합하지 않습니다. 이 경우 
+상품추적(예약정보기준)API 활용을 권장드립니다. 
+불가피하게 해당 API 통한 구현이 필요한 경우 아래내용 준수 요청드립니다. 
+1. 배송완료 획득 시 해당 운송장번호는 호출대상에서 제외되어야 함 
+2. n 일간 배송완료가 발생하지 않는 건에 대해 호출이 지속 발생해서는 안됨, 기준 정립 필요  
+(ex. 10 일 간 배송완료가 획득되지 않는 건의 경우 호출대상에서 제외. 별도 운영단 통한 확인 필요) 
+3. 짧은 주기 통한 과도한 호출지양 (적절주기 예시 : 3 시간 간격으로 재호출 진행) 
+  
+SAMPLE – OUTPUT (Success Case) 
+{ 
+   "RESULT_CD":"S", 
+   "RESULT_DETAIL":"Success.", 
+   "DATA":[ 
+      { 
+         "CRG_ST":"91", 
+         "CRG_ST_NM":"배송완료", 
+         "SCAN_YMD":"2020-12-31", 
+         "SCAN_HOUR":"10:34:02", 
+         "DEALT_BRAN_NM":"서울서대문", 
+         "DEALT_BRAN_TEL":"서울서대문(070-****-****)", 
+         "DEALT_EMP_NM":"이선", 
+         "DEALT_EMP_TEL":"070-****-****", 
+         "INVC_NO":"384091786506", 
+         "ACPTR_NM":"박일" 
+      } 
+   ] 
+} 
+===== PAGE 14 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+14 / 52 
+1.3.6. 운송장 번호 생성 API 
+1) 전송 주기: 수시 
+2) 고객사에 운송장 번호 단건 제공 (운송장 번호 대역을 발급받지 않은 업체에서 자가 출력 시에 사용) 
+3) 기준: 고객ID 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+  
+인터페이스명 채번 
+인터페이스설명 고객사에 운송장 번호 단건 제공 
+Resource명 ReqInvcNo Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CLNTNUM 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+USER_ID 중개업체 ID 
+중개업체 사용 시 필수 
+중개업체 계정(대한통운 담당자와 협의) 
+VARCHAR2(20)  
+ 
+리턴매개변수 
+ 
+ 
+참고 : 다수의 운송장 번호를 생성하기 위해서는 운송장 번호 생성 건수 만큼 API 호출하여야 합니다. 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 조회 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+INVC_NO 운송장 번호  VARCHAR2(20) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "CLNTNUM":"계약된 고객ID를 넣어 주세요", 
+"TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z" 
+   } 
+} 
+SAMPLE – OUTPUT 
+{ 
+    "RESULT_CD": "S", 
+    "RESULT_DETAIL": "Success", 
+    "DATA": { 
+        "INVC_NO": "650000000033" 
+    } 
+} 
+===== PAGE 15 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+15 / 52 
+1.3.7. (일반)예약 접수 API 
+ 
+ 
+1) 전송주기: 수시 
+2) 고객사가 대한통운에 배송처리 요청을 위한 예약 관련 정보 송신 
+3) 기준: 고객사에서 신규 등록/취소 예약 정보 
+4) 송수신절차: 고객사(CJ API Request) → CJ (수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 예약 
+인터페이스설명 고객사의 배송 요청정보를 대한통운에 등록 
+Resource명 RegBook Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) P .K 
+RCPT_YMD 접수일자 YYYYMMDD VARCHAR2(9) P .K 
+CUST_USE_NO 고객사용번호 
+기업고객이 관리하는 주문번호/ 영수번호 등 내
+부 관리번호 
+취소 시에 취소처리 기준(중복되면 취소 불가
+능) 
+VARCHAR2(50) 
+P .K 
+
+===== PAGE 16 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+16 / 52 
+RCPT_DV 접수구분 01: 일반, 02: 반품 VARCHAR2(2) P .K 
+WORK_DV_CD 작업구분코드 01: 일반 VARCHAR2(2) P .K 
+REQ_DV_CD 요청구분코드 01: 요청, 02: 취소 VARCHAR2(2) P .K 
+MPCK_KEY 합포장 키 
+다수데이터를 한 송장에 출력할 경우 처리(ex:
+합포 없는 경우 YYYYMMDD_고객ID_고객사용번
+호 or YYYYMMDD_고객ID_운송장번호) 
+합포장 키와 합포장 순번은 반드시 무결성이 
+보장 되어야 합니다. 
+VARCHAR2(100) 
+P .K 
+CAL_DV_CD 정산구분코드 01: 계약 운임 VARCHAR2(2) NOT NULL 
+FRT_DV_CD 운임구분코드 01: 선불, 02: 착불, 03: 신용 VARCHAR2(2) NOT NULL 
+CNTR_ITEM_CD 계약품목코드 01: 일반 품목 VARCHAR2(50) NOT NULL 
+BOX_TYPE_CD 박스타입코드 
+01: 극소, 02: 소, 03: 중, 04: 대1, 05: 이형,  
+06: 취급제한, 07: 대2 
+VARCHAR2(2) 
+NOT NULL 
+BOX_QTY 박스 수량 택배 박스 수량 NUMBER(11) NOT NULL 
+FRT 운임 운임적용구분이 자료 운임일 경우 등록 처리 NUMBER(22)   
+CUST_MGMT_DLCM_CD 고객관리거래처코드 
+주관사 관리 협력업체 코드 혹은 택배사 관리 
+업체코드 
+VARCHAR2(30) 
+NOT NULL 
+SENDR_NM 보내는분 명   VARCHAR2(100) NOT NULL 
+SENDR_TEL_NO1 보내는분 전화번호1   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO2 보내는분 전화번호2   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO3 보내는분 전화번호3  VARCHAR2(4) NOT NULL 
+SENDR_CELL_NO1 보내는분 휴대폰번호1   VARCHAR2(4)   
+SENDR_CELL_NO2 보내는분 휴대폰번호2   VARCHAR2(4)   
+SENDR_CELL_NO3 보내는분 휴대폰번호3  VARCHAR2(4)   
+SENDR_SAFE_NO1 보내는분 안심번호1   VARCHAR2(4)   
+SENDR_SAFE_NO2 보내는분 안심번호2   VARCHAR2(4)   
+SENDR_SAFE_NO3 보내는분 안심번호3   VARCHAR2(4)   
+SENDR_ZIP_NO 보내는분 우편번호   VARCHAR2(6) NOT NULL 
+SENDR_ADDR 보내는분 주소 보내는분 주소 VARCHAR2(150) NOT NULL 
+SENDR_DETAIL_ADDR 보내는분 상세주소 보내는분 상세 주소  VARCHAR2(300) NOT NULL 
+RCVR_NM 받는분 명 
+RCPT_DV(접수구분) = '02' ( 반품)시는 계약상 등
+록 된 업체 고정회수지 정보 입력. 이하 받는분 
+관련 정보도 고정 회수지에 해당하는 정보 입
+력 VARCHAR2(100) NOT NULL 
+RCVR_TEL_NO1 받는분 전화번호1   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO2 받는분 전화번호2   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO3 받는분 전화번호3  VARCHAR2(4) NOT NULL 
+RCVR_CELL_NO1 받는분 휴대폰번호1   VARCHAR2(4)   
+RCVR_CELL_NO2 받는분 휴대폰번호2   VARCHAR2(4)   
+RCVR_CELL_NO3 받는분 휴대폰번호3  VARCHAR2(4)   
+RCVR_SAFE_NO1 받는분 안심번호1   VARCHAR2(4)   
+RCVR_SAFE_NO2 받는분 안심번호2   VARCHAR2(4)   
+RCVR_SAFE_NO3 받는분 안심번호3   VARCHAR2(4)   
+RCVR_ZIP_NO 받는분 우편번호   VARCHAR2(6) NOT NULL 
+RCVR_ADDR 받는분 주소 받는분 주소 VARCHAR2(150) NOT NULL 
+RCVR_DETAIL_ADDR 받는분 상세주소 받는분 상세 주소  VARCHAR2(300) NOT NULL 
+ORDRR_NM 주문자 명   VARCHAR2(100)   
+ORDRR_TEL_NO1 주문자전화번호1   VARCHAR2(4)   
+ORDRR_TEL_NO2 주문자전화번호2   VARCHAR2(4)   
+===== PAGE 17 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+17 / 52 
+ORDRR_TEL_NO3 주문자전화번호3  VARCHAR2(4)   
+ORDRR_CELL_NO1 주문자휴대폰번호1   VARCHAR2(4)   
+ORDRR_CELL_NO2 주문자휴대폰번호2   VARCHAR2(4)   
+ORDRR_CELL_NO3 주문자휴대폰번호3  VARCHAR2(4)   
+ORDRR_SAFE_NO1 주문자안심번호1   VARCHAR2(4)   
+ORDRR_SAFE_NO2 주문자안심번호2   VARCHAR2(4)   
+ORDRR_SAFE_NO3 주문자 안심번호3   VARCHAR2(4)   
+ORDRR_ZIP_NO 주문자 우편번호   VARCHAR2(6)   
+ORDRR_ADDR 주문자 주소 주문자 주소 VARCHAR2(150)   
+ORDRR_DETAIL_ADDR 주문자 상세주소 주문자 상세 주소  VARCHAR2(300)   
+INVC_NO 운송장 번호 
+RCPT_DV(접수구분) = '02' (반품,회수) 반품의 경
+우에는 사용 안함 (빈칸으로 전송) VARCHAR2(20)   
+ORI_INVC_NO 원운송장번호 
+RCPT_DV(접수구분) = '02' ( 반품,회수)시 대상이 
+되는 원 출고 운송장번호 VARCHAR2(20)   
+ORI_ORD_NO 원주문 번호   VARCHAR2(100)   
+COLCT_EXPCT_YMD 집화 예정일자 현재 사용 안함 VARCHAR2(9)   
+COLCT_EXPCT_HOUR 집화 예정시간 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_YMD 배송 예정일자 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_HOUR 배송 예정시간 현재 사용 안함 VARCHAR2(9)   
+PRT_ST 운송장 출력상태 
+01: 미출력, 02: 선출력, 03: 선발번 (반품은 선발
+번이 없음) 반품 (RCPT_DV = '02') 진행 시, 
+PRT_ST = '01' 기재 
+VARCHAR2(3) 
+NOT NULL 
+ARTICLE_AMT 물품가 액   NUMBER(15)   
+REMARK_1 비고1 배송 메세지1 (비고) VARCHAR2(1000)   
+REMARK_2 비고2 배송 메세지2 (보내는분비고) VARCHAR2(1000)   
+REMARK_3 비고3 배송 메세지3 (받는분비고) VARCHAR2(1000)   
+COD_YN COD여부 N VARCHAR2(2)   
+ETC_1 기타1   VARCHAR2(500)   
+ETC_2 기타2   VARCHAR2(500)   
+ETC_3 기타3   VARCHAR2(500)   
+ETC_4 기타4   VARCHAR2(500)   
+ETC_5 기타5   VARCHAR2(500)   
+DLV_DV 택배구분 ‘01’: 택배 VARCHAR2(2) NOT NULL 
+RCPT_SERIAL 접수시리얼 번호   VARCHAR2(50)   
+MPCK_SEQ 합포장 순번 
+합포장 처리건수가 다수일 경우 SEQ처리를 수
+행한다. 
+(합포 없는 경우 무조건 1) 
+ARRAY[] 
+ 
+NUMBER(20) P .K 
+GDS_CD 상품코드 VARCHAR2(20)   
+GDS_NM 상품명 VARCHAR2(500) NOT NULL 
+GDS_QTY 상품수량 NUMBER(11)   
+UNIT_CD 단품코드 VARCHAR2(20)   
+UNIT_NM 단품명 VARCHAR2(500)   
+GDS_AMT 상품가액 NUMBER(15)   
+ 
+리턴매개변수 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 등록 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+===== PAGE 18 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+18 / 52 
+ 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "RCPT_YMD":"20250515", 
+      "CUST_USE_NO":"12345678", 
+      "RCPT_DV":"01", 
+      "WORK_DV_CD":"01", 
+      "REQ_DV_CD":"01", 
+      "MPCK_KEY":"1234567893", 
+      "CAL_DV_CD":"1", 
+      "FRT_DV_CD":"03", 
+      "CNTR_ITEM_CD":"01", 
+      "BOX_TYPE_CD":"02", 
+      "BOX_QTY":"1", 
+      "FRT":"", 
+      "CUST_MGMT_DLCM_CD":"계약된 고객ID를 넣어 주세요", 
+      "SENDR_NM":"회사명", 
+      "SENDR_TEL_NO1":"02", 
+      "SENDR_TEL_NO2":"1577", 
+      "SENDR_TEL_NO3":"1111", 
+      "SENDR_CELL_NO1":"02", 
+      "SENDR_CELL_NO2":"1577", 
+      "SENDR_CELL_NO3":"1111", 
+      "SENDR_SAFE_NO1":"02", 
+      "SENDR_SAFE_NO2":"1577", 
+      "SENDR_SAFE_NO3":"1111", 
+      "SENDR_ZIP_NO":"000000", 
+      "SENDR_ADDR":"서울 송파구 무슨무슨로", 
+      "SENDR_DETAIL_ADDR":"000동 000호", 
+      "RCVR_NM":"CJ대한통운", 
+      "RCVR_TEL_NO1":"02", 
+      "RCVR_TEL_NO2":"1588", 
+      "RCVR_TEL_NO3":"1111", 
+      "RCVR_CELL_NO1":"02", 
+      "RCVR_CELL_NO2":"1588", 
+      "RCVR_CELL_NO3":"1111", 
+      "RCVR_SAFE_NO1":"02", 
+      "RCVR_SAFE_NO2":"1588", 
+      "RCVR_SAFE_NO3":"1111", 
+      "RCVR_ZIP_NO":"000000", 
+      "RCVR_ADDR":"경기도 의왕시 무슨무슨로", 
+      "RCVR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "ORDRR_NM":"테스트", 
+      "ORDRR_TEL_NO1":"02", 
+      "ORDRR_TEL_NO2":"1599", 
+      "ORDRR_TEL_NO3":"9999", 
+      "ORDRR_CELL_NO1":"02", 
+===== PAGE 19 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+19 / 52 
+      "ORDRR_CELL_NO2":"1599", 
+      "ORDRR_CELL_NO3":"9999", 
+      "ORDRR_SAFE_NO1":"02", 
+      "ORDRR_SAFE_NO2":"1599", 
+      "ORDRR_SAFE_NO3":"9999", 
+      "ORDRR_ZIP_NO":"11111", 
+      "ORDRR_ADDR":" 경기도 의왕시 무슨무슨로", 
+      "ORDRR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "INVC_NO":"111111111111", 
+      "ORI_INVC_NO":"", 
+      "ORI_ORD_NO":"", 
+      "COLCT_EXPCT_YMD":"", 
+      "COLCT_EXPCT_HOUR":"", 
+      "SHIP_EXPCT_YMD":"", 
+      "SHIP_EXPCT_HOUR":"", 
+      "PRT_ST":"02", 
+      "ARTICLE_AMT":"10000", 
+      "REMARK_1":"배송 요청사항", 
+      "REMARK_2":"", 
+      "REMARK_3":"", 
+      "COD_YN":"N", 
+      "ETC_1":"", 
+      "ETC_2":"", 
+      "ETC_3":"", 
+      "ETC_4":"", 
+      "ETC_5":"", 
+      "DLV_DV":"01", 
+      "RCPT_SERIAL":"", 
+      "ARRAY":[ 
+         { 
+            "MPCK_SEQ":"1", 
+            "GDS_CD":"11", 
+            "GDS_NM":"[6250.0] 테스트자료 ^^", 
+            "GDS_QTY":"1", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트1", 
+            "GDS_AMT":"111" 
+         }, 
+         { 
+            "MPCK_SEQ":"2", 
+            "GDS_CD":"22", 
+            "GDS_NM":"테스트2", 
+            "GDS_QTY":"2", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트2", 
+            "GDS_AMT":"222" 
+         }, 
+         { 
+            "MPCK_SEQ":"3", 
+            "GDS_CD":"33", 
+            "GDS_NM":"테스트3", 
+===== PAGE 20 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+20 / 52 
+ 
+ 
+ 
+ 
+참고 1 : 예약 취소 처리 불가의 경우 : 
+1. 운송장 번호를 생성하여 자체 출력하는 고객사의 경우 예약 접수 한 경우(상품 발송을 하지 않으면 택배운임
+에서 제외 됩니다.) 이는 오프라인 상태의 출고 상태를 확인 할 수 없기 때문 입니다. 
+2. 운송장 스캔이 있는경우 (당사 택배기사님이 상품을 인수한 것으로 간주하여 취소처리 가 불가합니다.) 
+3. 대한통운에서 운송장 출력 처리를 할 경우 출력 이후 취소가 불가합니다. 
+ 
+참고 2 : 대량으로 예약 접수시도 건별로 접수 처리 하여 주시기 바랍니다. 
+현재 대량으로 예약 접수를 진행하시는 경우에도 단건 접수 API 를 반복적으로 호출하여 예약 접수를 진행하셔야 
+합니다. 데이터 접수 처리, 누락 방지등을 위하여 API 처리 정책은 단건으로 수립하여 운영하고 있습니다. 
+ 
+ 
+참고 3 : 예약 접수후 상품추적이 안되는 이유는 다음과 같습니다. 
+예약 접수 이후 실물 택배상품이 대한통운에 전달되어 상품 스캔 작업이 있어야 상품추적이 가능합니다. 
+예약의 경우 실제 출고 여부를 확인할 수 없는 상태이기 때문에 실제 스캔 작업 이후부터 상품추적이 
+가능합니다. 
+ 
+ 
+  
+            "GDS_QTY":"3", 
+            "UNIT_CD":"33", 
+            "UNIT_NM":"테스트3", 
+            "GDS_AMT":"333" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT (Success Case) 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+SAMPLE – OUTPUT (Error Case) 
+{ 
+   "RESULT_CD": "E", 
+   "RESULT_DETAIL": "ORA-00001" 
+} 
+===== PAGE 21 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+21 / 52 
+1.3.8. (일반)상품추적(예약정보기준) API 
+ 
+ 
+1) 전송 주기: 수시 : 예약 접수 자료 기준으로 상품 추적 정보 제공 
+2) 일반자료 구성 고객 대상으로 일자별 미전송 상품추적 데이터 제공 
+3) 기준: 특정 일자별 고객 미전송 데이터 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) →고객사(결과 수신) 
+ 
+인터페이스명 상품추적 대량 
+인터페이스설명 일반자료 구성 고객 대상으로 일자별 미전송 상품추적 데이터 제공 (1회 요청 시 최대500건) 
+Resource명 ReqMssGdsTrc Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+REQ_DT 추적데이터 등록일자 YYYYMMDD VARCHAR2(9) NOT NULL 
+SND_YN 
+수신 데이터 업데이
+트 여부 
+제공 받은 데이터 업데이트 여부 
+Y일 경우 고객사 수신 여부 확인 없이 업데이트
+를 하며, N일 경우 고객사의 업데이트 API 호출
+로 수신 여부 처리 함 
+업데이트 처리가 안될 경우 상품추적 요청 시 
+동일한 데이터가 계속 전송 될 수 있음 
+VARCHAR2(1) 
+ 
+
+===== PAGE 22 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+22 / 52 
+ 
+리턴매개변수 
+ 
+ 
+  
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 조회 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+CUST_ID 고객번호 
+ARRAY[] 
+VARCHAR(20) 
+RCPT_DV 예약구분 VARCHAR(20) 
+INVC_NO 운송장 번호 VARCHAR(20) 
+CUST_USE_NO 주문번호 VARCHAR2(100) 
+CRG_ST 
+화물상태 
+(1.2.1 참조) 
+VARCHAR2(2) 
+CRG_ST_NM 화물상태 명 VARCHAR2(50) 
+SCAN_YMD 스캔일자 VARCHAR(8) 
+SCAN_HOUR 스캔시간 VARCHAR(6) 
+DEALT_BRAN_NM 처리 점소명 VARCHAR2(50) 
+DEALEMP_NM 처리자 명 VARCHAR2(100) 
+ACPTR_NM 인수자 명 VARCHAR2(60) 
+NO_CLDV_RSN_CD 
+미집화/미배송 
+(1.2.2, 1.2.3 참조) VARCHAR2(2) 
+DETAIL_RSN 
+미집화/미배송 상
+세 
+VARCHAR2(50) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "REQ_DT":"20201215", 
+      "SND_YN":"Y", 
+"TOKEN_NUM" : " 23c5c70e-97f8-4a46-9d4a-8b15b098429z" 
+   } 
+} 
+===== PAGE 23 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+23 / 52 
+ 
+ 
+  
+SAMPLE – OUTPUT 
+{ 
+   "RESULT_CD":"S", 
+   "RESULT_DETAIL":"Success.", 
+   "DATA":[ 
+      { 
+         "CUST_ID":"301***27", 
+         "RCPT_DV":"01", 
+         "INVC_NO":"38717**12912", 
+         "CUST_USE_NO":"58***78", 
+         "CRG_ST":"01", 
+         "CRG_ST_NM":"집화지시", 
+         "SCAN_YMD":"20201215", 
+         "SCAN_HOUR":"094404", 
+         "DEALT_BRAN_NM":"서울강남에스앤", 
+         "DEALEMP_NM":"정**", 
+         "ACPTR_NM":"본인", 
+         "NO_CLDV_RSN_CD":null, 
+         "DETAIL_RSN":null 
+      }, 
+      { 
+         "CUST_ID":"301***27", 
+         "RCPT_DV":"01", 
+         "INVC_NO":"3871****12923", 
+         "CUST_USE_NO":"58**081", 
+         "CRG_ST":"01", 
+         "CRG_ST_NM":"집화지시", 
+         "SCAN_YMD":"20201215", 
+         "SCAN_HOUR":"094404", 
+         "DEALT_BRAN_NM":"서울강남에스앤", 
+         "DEALEMP_NM":"정**", 
+         "ACPTR_NM":"본인", 
+         "NO_CLDV_RSN_CD":null, 
+         "DETAIL_RSN":null 
+      } 
+   ] 
+} 
+===== PAGE 24 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+24 / 52 
+1.3.9. (일반)상품추적(예약정보기준) 수신여부 확정 API 
+1) 전송주기: 수시 : 예약 접수 자료 기준으로 상품 추적 정보 제공 
+2) 상품추적대량 데이터 정상 수신 업데이트 (상품 추적 데이터를 정상적으로 수신 했음을 알리는 API) 
+3) 기준: 제공받은 상품추적 대량 데이터 
+4) 송수신절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 상품추적대량 수신여부 업데이트 
+인터페이스설명 상품추적대량 데이터 정상 수신 업데이트 (최대 500건) 
+Resource명 RcvMssGdsTrcCnfrm Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CLNTNUM 고객 ID 계약된 고객사 코드 VARCHAR2(20) NOT NULL 
+INVC_NO 운송장 번호 
+ARRAY[], 최대 500건까지 허용 
+VARCHAR2(20) NOT NULL 
+CRG_ST 화물상태 (1.2.1참조) VARCHAR2(2) NOT NULL 
+ 
+리턴매개변수 
+ 
+ 
+ 
+ 
+  
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 업데이트 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "CLNTNUM":"계약된 고객ID를 넣어 주세요", 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+      "ARRAY":[ 
+         { 
+            "INVC_NO":"111112345612", 
+            "CRG_ST":"91" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+===== PAGE 25 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+25 / 52 
+1.3.10. (일반)예약취소 API 
+1) 전송 주기: 수시 
+2) 고객사가 등록한 예약 정보를 실시간으로 취소 (운송장 출력 시 취소 불가능합니다.) 
+3) 기준: 고객사에서 등록한 예약정보 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 예약취소 
+인터페이스설명 고객사의 예약 정보를 운송장 상태 기준으로 취소 진행 
+Resource명 CnclBook Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) P .K 
+RCPT_YMD 접수일자 YYYYMMDD VARCHAR2(9) P .K 
+CUST_USE_NO 고객사용번호 
+기업고객이 관리하는 주문번호/ 영수번호 등 내
+부 관리번호 
+취소 시에 취소처리 기준(중복되면 취소 불가
+능) 
+VARCHAR2(50) 
+P .K 
+RCPT_DV 접수구분 01: 일반, 02: 반품 VARCHAR2(2) P .K 
+WORK_DV_CD 작업구분 코드 01: 일반 VARCHAR2(2) P .K 
+REQ_DV_CD 요청구분 코드 02: 취소만 가능 VARCHAR2(2) P .K 
+MPCK_KEY 합포장 키 
+다수데이터를 한 송장에 출력할 경우 처리(ex:
+합포 없는 경우 YYYYMMDD_고객ID_고객사용번
+호 or YYYYMMDD_고객ID_운송장번호) 
+합포장 키와 합포장 순번은 반드시 무결성이 
+보장 되어야 합니다. 
+VARCHAR2(100) 
+P .K 
+CAL_DV_CD 정산구분 코드 01: 계약 운임 VARCHAR2(2) NOT NULL 
+FRT_DV_CD 운임구분 코드 01: 선불, 02: 착불, 03: 신용 VARCHAR2(2) NOT NULL 
+CNTR_ITEM_CD 계약품목 코드 01: 일반 품목 VARCHAR2(50) NOT NULL 
+BOX_TYPE_CD 박스타입 코드 
+01: 극소, 02: 소, 03: 중, 04: 대1, 05: 이형,  
+06: 취급제한, 07: 대2 
+VARCHAR2(2) 
+NOT NULL 
+BOX_QTY 박스 수량 택배 박스 수량 NUMBER(11) NOT NULL 
+FRT 운임 운임적용구분이 자료 운임일 경우 등록 처리 NUMBER(22)   
+CUST_MGMT_DLCM_CD 고객관리거래처코드 
+주관사 관리 협력업체 코드 혹은 택배사 관리 
+업체코드 
+VARCHAR2(30) 
+NOT NULL 
+SENDR_NM 보내는분 명   VARCHAR2(100) NOT NULL 
+SENDR_TEL_NO1 보내는분 전화번호1   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO2 보내는분 전화번호2   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO3 보내는분 전화번호3  VARCHAR2(4) NOT NULL 
+SENDR_CELL_NO1 보내는분 휴대폰번호1   VARCHAR2(4)   
+SENDR_CELL_NO2 보내는분 휴대폰번호2   VARCHAR2(4)   
+SENDR_CELL_NO3 보내는분 휴대폰번호3  VARCHAR2(4)   
+SENDR_SAFE_NO1 보내는분 안심번호1   VARCHAR2(4)   
+SENDR_SAFE_NO2 보내는분 안심번호2   VARCHAR2(4)   
+SENDR_SAFE_NO3 보내는분 안심번호3   VARCHAR2(4)   
+===== PAGE 26 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+26 / 52 
+SENDR_ZIP_NO 보내는분 우편번호   VARCHAR2(6) NOT NULL 
+SENDR_ADDR 보내는분 주소 보내는분 주소 VARCHAR2(150) NOT NULL 
+SENDR_DETAIL_ADDR 보내는분 상세주소 보내는분 상세 주소  VARCHAR2(300) NOT NULL 
+RCVR_NM 받는분 명   VARCHAR2(100) NOT NULL 
+RCVR_TEL_NO1 받는분 전화번호1   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO2 받는분 전화번호2   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO3 받는분 전화번호3  VARCHAR2(4) NOT NULL 
+RCVR_CELL_NO1 받는분 휴대폰번호1   VARCHAR2(4)   
+RCVR_CELL_NO2 받는분 휴대폰번호2   VARCHAR2(4)   
+RCVR_CELL_NO3 받는분 휴대폰번호3  VARCHAR2(4)   
+RCVR_SAFE_NO1 받는분 안심번호1   VARCHAR2(4)   
+RCVR_SAFE_NO2 받는분 안심번호2   VARCHAR2(4)   
+RCVR_SAFE_NO3 받는분 안심번호3   VARCHAR2(4)   
+RCVR_ZIP_NO 받는분 우편번호   VARCHAR2(6) NOT NULL 
+RCVR_ADDR 받는분 주소 받는분 주소 VARCHAR2(150) NOT NULL 
+RCVR_DETAIL_ADDR 받는분 상세주소 받는분 상세 주소 VARCHAR2(300) NOT NULL 
+ORDRR_NM 주문자 명   VARCHAR2(100)   
+ORDRR_TEL_NO1 주문자 전화번호1   VARCHAR2(4)   
+ORDRR_TEL_NO2 주문자 전화번호2   VARCHAR2(4)   
+ORDRR_TEL_NO3 주문자 전화번호3  VARCHAR2(4)   
+ORDRR_CELL_NO1 주문자 휴대폰번호1   VARCHAR2(4)   
+ORDRR_CELL_NO2 주문자 휴대폰번호2   VARCHAR2(4)   
+ORDRR_CELL_NO3 주문자 휴대폰번호3  VARCHAR2(4)   
+ORDRR_SAFE_NO1 주문자 안심번호1   VARCHAR2(4)   
+ORDRR_SAFE_NO2 주문자 안심번호2   VARCHAR2(4)   
+ORDRR_SAFE_NO3 주문자 안심번호3   VARCHAR2(4)   
+ORDRR_ZIP_NO 주문자 우편번호   VARCHAR2(6)   
+ORDRR_ADDR 주문자 주소 주문자 주소 VARCHAR2(150)   
+ORDRR_DETAIL_ADDR 주문자 상세주소 주문자 상세 주소  VARCHAR2(300)   
+INVC_NO 운송장 번호   VARCHAR2(20)   
+ORI_INVC_NO 원운송장 번호   VARCHAR2(20)   
+ORI_ORD_NO 원주문 번호   VARCHAR2(100)   
+COLCT_EXPCT_YMD 집화 예정일자 현재 사용 안함 VARCHAR2(9)   
+COLCT_EXPCT_HOUR 집화 예정시간 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_YMD 배송 예정일자 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_HOUR 배송 예정시간 현재 사용 안함 VARCHAR2(9)   
+PRT_ST 운송장 출력상태 
+01: 미출력, 02: 선출력, 03: 선발번 (반품은 선발
+번이 없음) 반품 (RCPT_DV = '02') 진행 시, 
+PRT_ST = '01' 기재 
+VARCHAR2(3) 
+NOT NULL 
+ARTICLE_AMT 물품가액   NUMBER(15)   
+REMARK_1 비고1 배송 메세지1 (비고) VARCHAR2(1000)   
+REMARK_2 비고2 배송 메세지2 (보내는분 비고) VARCHAR2(1000)   
+REMARK_3 비고3 배송 메세지3 (받는분 비고) VARCHAR2(1000)   
+COD_YN COD여부 N VARCHAR2(2)   
+ETC_1 기타1   VARCHAR2(500)   
+ETC_2 기타2   VARCHAR2(500)   
+ETC_3 기타3   VARCHAR2(500)   
+ETC_4 기타4   VARCHAR2(500)   
+ETC_5 기타5   VARCHAR2(500)   
+===== PAGE 27 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+27 / 52 
+DLV_DV 택배구분 ‘01’: 택배 VARCHAR2(2) NOT NULL 
+RCPT_SERIAL 접수 시리얼 번호   VARCHAR2(50)   
+MPCK_SEQ 합포장 순번 
+합포장 처리건수가 다수일 경우 SEQ처리를 수
+행한다. 
+(합포 없는 경우 무조건 1) 
+ARRAY[] 
+NUMBER(20) P .K 
+GDS_CD 상품코드 VARCHAR2(20)   
+GDS_NM 상품명 VARCHAR2(500) NOT NULL 
+GDS_QTY 상품수량 NUMBER(11)   
+UNIT_CD 단품코드 VARCHAR2(20)   
+UNIT_NM 단품명 VARCHAR2(500)   
+GDS_AMT 상품가액 NUMBER(15)   
+ 
+리턴매개변수 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 등록 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+SAMPLE – INPUT (Success Case) 
+{ 
+   "DATA":{ 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "RCPT_YMD":"20250515", 
+      "CUST_USE_NO":"12345678", 
+      "RCPT_DV":"01", 
+      "WORK_DV_CD":"01", 
+      "REQ_DV_CD":"02", 
+      "MPCK_KEY":"1234567893", 
+      "CAL_DV_CD":"1", 
+      "FRT_DV_CD":"03", 
+      "CNTR_ITEM_CD":"01", 
+      "BOX_TYPE_CD":"02", 
+      "BOX_QTY":"1", 
+      "FRT":"", 
+      "CUST_MGMT_DLCM_CD":"계약된 고객ID를 넣어 주세요", 
+      "SENDR_NM":"회사명", 
+      "SENDR_TEL_NO1":"02", 
+      "SENDR_TEL_NO2":"1577", 
+      "SENDR_TEL_NO3":"1111", 
+      "SENDR_CELL_NO1":"02", 
+      "SENDR_CELL_NO2":"1577", 
+      "SENDR_CELL_NO3":"1111", 
+      "SENDR_SAFE_NO1":"02", 
+      "SENDR_SAFE_NO2":"1577", 
+      "SENDR_SAFE_NO3":"1111", 
+      "SENDR_ZIP_NO":"000000", 
+      "SENDR_ADDR":"서울 송파구 무슨무슨로", 
+      "SENDR_DETAIL_ADDR":"000동 000호", 
+      "RCVR_NM":"CJ대한통운", 
+      "RCVR_TEL_NO1":"02", 
+===== PAGE 28 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+28 / 52 
+      "RCVR_TEL_NO2":"1588", 
+      "RCVR_TEL_NO3":"1111", 
+      "RCVR_CELL_NO1":"02", 
+      "RCVR_CELL_NO2":"1588", 
+      "RCVR_CELL_NO3":"1111", 
+      "RCVR_SAFE_NO1":"02", 
+      "RCVR_SAFE_NO2":"1588", 
+      "RCVR_SAFE_NO3":"1111", 
+      "RCVR_ZIP_NO":"000000", 
+      "RCVR_ADDR":"경기도 의왕시 무슨무슨로", 
+      "RCVR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "ORDRR_NM":"테스트", 
+      "ORDRR_TEL_NO1":"02", 
+      "ORDRR_TEL_NO2":"1599", 
+      "ORDRR_TEL_NO3":"9999", 
+      "ORDRR_CELL_NO1":"02", 
+      "ORDRR_CELL_NO2":"1599", 
+      "ORDRR_CELL_NO3":"9999", 
+      "ORDRR_SAFE_NO1":"02", 
+      "ORDRR_SAFE_NO2":"1599", 
+      "ORDRR_SAFE_NO3":"9999", 
+      "ORDRR_ZIP_NO":"11111", 
+      "ORDRR_ADDR":" 경기도 의왕시 무슨무슨로", 
+      "ORDRR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "INVC_NO":"", 
+      "ORI_INVC_NO":"", 
+      "ORI_ORD_NO":"", 
+      "COLCT_EXPCT_YMD":"", 
+      "COLCT_EXPCT_HOUR":"", 
+      "SHIP_EXPCT_YMD":"", 
+      "SHIP_EXPCT_HOUR":"", 
+      "PRT_ST":"01", 
+      "ARTICLE_AMT":"10000", 
+      "REMARK_1":"배송 요청사항", 
+      "REMARK_2":"", 
+      "REMARK_3":"", 
+      "COD_YN":"N", 
+      "ETC_1":"", 
+      "ETC_2":"", 
+      "ETC_3":"", 
+      "ETC_4":"", 
+      "ETC_5":"", 
+      "DLV_DV":"01", 
+      "RCPT_SERIAL":"", 
+      "ARRAY":[ 
+         { 
+            "MPCK_SEQ":"1", 
+            "GDS_CD":"11", 
+            "GDS_NM":"[6250.0] 테스트자료 ^^", 
+            "GDS_QTY":"1", 
+            "UNIT_CD":"11", 
+===== PAGE 29 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+29 / 52 
+ 
+ 
+참고 1 : 예약 취소 처리 불가의 경우 : 
+1. 운송장 번호를 생성하여 자체 출력하는 고객사의 경우 예약 접수 한 경우(상품 발송을 하지 않으면 택배운임
+에서 제외 됩니다.) 이는 오프라인 상태의 출고 상태를 확인 할 수 없기 때문 입니다. 
+2. 운송장 스캔이 있는경우 (당사 택배기사님이 상품을 인수한 것으로 간주하여 취소처리 가 불가합니다.) 
+3. 대한통운에서 운송장 출력 처리를 할 경우 출력 이후 취소가 불가합니다. 
+ 
+            "UNIT_NM":"테스트1", 
+            "GDS_AMT":"111" 
+         }, 
+         { 
+            "MPCK_SEQ":"2", 
+            "GDS_CD":"22", 
+            "GDS_NM":"테스트2", 
+            "GDS_QTY":"2", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트2", 
+            "GDS_AMT":"222" 
+         }, 
+         { 
+            "MPCK_SEQ":"3", 
+            "GDS_CD":"33", 
+            "GDS_NM":"테스트3", 
+            "GDS_QTY":"3", 
+            "UNIT_CD":"33", 
+            "UNIT_NM":"테스트3", 
+            "GDS_AMT":"333" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT (Success Case) 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+SAMPLE – OUTPUT (Error Case) 
+{ 
+   "RESULT_CD": "E", 
+   "RESULT_DETAIL": "ORA-00001" 
+} 
+===== PAGE 30 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+30 / 52 
+1.3.11. (중개)예약 접수 API 
+ 
+ 
+1) 전송 주기: 수시 
+2) 고객사가 중개업체를 통하여 대한통운에 배송처리 요청을 위한 예약 관련 정보를 송신  
+3) 기준: 고객사에서 신규 등록/취소 예약 정보 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 예약(중개) 
+인터페이스설명 고객사의 배송 요청정보를 중개업체를 통하여 대한통운에 등록 
+Resource명 RegBrkrBook Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+USER_ID 중개업체 ID 중개업체 계정(대한통운 담당자와 협의) VARCHAR2(20) P .K 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) P .K 
+RCPT_YMD 접수일자 YYYYMMDD VARCHAR2(9) P .K 
+CUST_USE_NO 고객사용번호 
+기업고객이 관리하는 주문번호/ 영수번호 등 내
+부 관리번호 
+VARCHAR2(50) 
+P .K 
+
+===== PAGE 31 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+31 / 52 
+취소 시에 취소처리 기준(중복되면 취소 불가
+능) 
+RCPT_DV 접수구분 01: 일반, 02: 반품 VARCHAR2(2) P .K 
+WORK_DV_CD 작업구분 코드 01: 일반 VARCHAR2(2) P .K 
+REQ_DV_CD 요청구분 코드 01: 요청, 02: 취소 VARCHAR2(2) P .K 
+MPCK_KEY 합포장키 
+다수데이터를 한 송장에 출력할 경우 처리(ex:
+합포 없는 경우 YYYYMMDD_고객ID_고객사용번
+호 or YYYYMMDD_고객ID_운송장번호) 
+합포장 키와 합포장 순번은 반드시 무결성이 
+보장 되어야 합니다. 
+VARCHAR2(100) 
+P .K 
+CAL_DV_CD 정산구분 코드 01: 계약 운임 VARCHAR2(2) NOT NULL 
+FRT_DV_CD 운임구분 코드 01: 선불, 02: 착불, 03: 신용 VARCHAR2(2) NOT NULL 
+CNTR_ITEM_CD 계약품목 코드 01: 일반 품목 VARCHAR2(50) NOT NULL 
+BOX_TYPE_CD 박스타입 코드 
+01: 극소, 02: 소, 03: 중,  04: 대1,  05: 이형, 
+06: 취급제한, 07: 대2 
+VARCHAR2(2) 
+NOT NULL 
+BOX_QTY 박스수량 택배 박스 수량 NUMBER(11) NOT NULL 
+FRT 운임 운임적용구분이 자료 운임일 경우 등록 처리 NUMBER(22)   
+CUST_MGMT_DLCM_CD 고객관리거래처코드 
+주관사 관리 협력업체 코드 혹은 택배사 관리 
+업체코드 
+VARCHAR2(30) 
+NOT NULL 
+SENDR_NM 보내는분 명   VARCHAR2(100) NOT NULL 
+SENDR_TEL_NO1 보내는분 전화번호1   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO2 보내는분 전화번호2   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO3 보내는분 전화번호3  VARCHAR2(4) NOT NULL 
+SENDR_CELL_NO1 보내는분 휴대폰번호1   VARCHAR2(4)   
+SENDR_CELL_NO2 보내는분 휴대폰번호2   VARCHAR2(4)   
+SENDR_CELL_NO3 보내는분 휴대폰번호3  VARCHAR2(4)   
+SENDR_SAFE_NO1 보내는분 안심번호1   VARCHAR2(4)   
+SENDR_SAFE_NO2 보내는분 안심번호2   VARCHAR2(4)   
+SENDR_SAFE_NO3 보내는분 안심번호3   VARCHAR2(4)   
+SENDR_ZIP_NO 보내는분 우편번호   VARCHAR2(6) NOT NULL 
+SENDR_ADDR 보내는분 주소 보내는분 주소 VARCHAR2(150) NOT NULL 
+SENDR_DETAIL_ADDR 보내는분 상세주소 보내는분 상세 주소  VARCHAR2(300) NOT NULL 
+RCVR_NM 받는분 명   VARCHAR2(100) NOT NULL 
+RCVR_TEL_NO1 받는분 전화번호1   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO2 받는분 전화번호2   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO3 받는분 전화번호3  VARCHAR2(4) NOT NULL 
+RCVR_CELL_NO1 받는분 휴대폰번호1   VARCHAR2(4)   
+RCVR_CELL_NO2 받는분 휴대폰번호2   VARCHAR2(4)   
+RCVR_CELL_NO3 받는분 휴대폰번호3  VARCHAR2(4)   
+RCVR_SAFE_NO1 받는분 안심번호1   VARCHAR2(4)   
+RCVR_SAFE_NO2 받는분 안심번호2   VARCHAR2(4)   
+RCVR_SAFE_NO3 받는분 안심번호3   VARCHAR2(4)   
+RCVR_ZIP_NO 받는분 우편번호   VARCHAR2(6) NOT NULL 
+RCVR_ADDR 받는분 주소 받는분 주소 VARCHAR2(150) NOT NULL 
+RCVR_DETAIL_ADDR 받는분 상세주소 받는분 상세 주소 VARCHAR2(300) NOT NULL 
+ORDRR_NM 주문자 명   VARCHAR2(100)   
+ORDRR_TEL_NO1 주문자 전화번호1   VARCHAR2(4)   
+ORDRR_TEL_NO2 주문자 전화번호2   VARCHAR2(4)   
+ORDRR_TEL_NO3 주문자 전화번호3  VARCHAR2(4)   
+===== PAGE 32 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+32 / 52 
+ORDRR_CELL_NO1 주문자 휴대폰번호1   VARCHAR2(4)   
+ORDRR_CELL_NO2 주문자 휴대폰번호2   VARCHAR2(4)   
+ORDRR_CELL_NO3 주문자 휴대폰번호3  VARCHAR2(4)   
+ORDRR_SAFE_NO1 주문자 안심번호1   VARCHAR2(4)   
+ORDRR_SAFE_NO2 주문자 안심번호2   VARCHAR2(4)   
+ORDRR_SAFE_NO3 주문자 안심번호3   VARCHAR2(4)   
+ORDRR_ZIP_NO 주문자 우편번호   VARCHAR2(6)   
+ORDRR_ADDR 주문자 주소 주문자 주소 VARCHAR2(150)   
+ORDRR_DETAIL_ADDR 주문자 상세주소 주문자 상세 주소 VARCHAR2(300)   
+INVC_NO 운송장 번호 
+RCPT_DV(접수구분) = '02' (반품,회수) 반품의 경
+우에는 사용 안함 (빈칸으로 전송) VARCHAR2(20)   
+ORI_INVC_NO 원운송장 번호 
+RCPT_DV(접수구분) = '02' ( 반품,회수)시 대상이 
+되는 원 출고 운송장번호 VARCHAR2(20)   
+ORI_ORD_NO 원주문 번호   VARCHAR2(100)   
+COLCT_EXPCT_YMD 집화 예정일자 현재 사용 안함 VARCHAR2(9)   
+COLCT_EXPCT_HOUR 집화 예정시간 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_YMD 배송 예정일자 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_HOUR 배송 예정시간 현재 사용 안함 VARCHAR2(9)   
+PRT_ST 운송장 출력상태 
+01: 미출력, 02: 선출력, 03: 선발번 (반품은 선발
+번이 없음) 반품 (RCPT_DV = '02') 진행 시, 
+PRT_ST = '01' 기재 
+VARCHAR2(3) 
+NOT NULL 
+ARTICLE_AMT 물품가액   NUMBER(15)   
+REMARK_1 비고1 배송 메세지1 (비고) VARCHAR2(1000)   
+REMARK_2 비고2 배송 메세지2 (보내는분 비고) VARCHAR2(1000)   
+REMARK_3 비고3 배송 메세지3 (받는분 비고) VARCHAR2(1000)   
+COD_YN COD여부 N VARCHAR2(2)   
+ETC_1 기타1  VARCHAR2(500)   
+ETC_2 기타2   VARCHAR2(500)   
+ETC_3 기타3   VARCHAR2(500)   
+ETC_4 기타4   VARCHAR2(500)   
+ETC_5 기타5   VARCHAR2(500)   
+DLV_DV 택배구분 ‘01’: 택배 VARCHAR2(2) NOT NULL 
+RCPT_SERIAL 접수 시리얼 번호   VARCHAR2(50)   
+MPCK_SEQ 합포장 순번 합포장 처리 건수가 다수일 경우 SEQ처리를 수
+행한다. 
+(합포 없는 경우 무조건 1) 
+ARRAY[] 
+NUMBER(20) P .K 
+GDS_CD 상품코드 VARCHAR2(20)   
+GDS_NM 상품명 VARCHAR2(500) NOT NULL 
+GDS_QTY 상품수량 NUMBER(11)   
+UNIT_CD 단품코드 VARCHAR2(20)   
+UNIT_NM 단품명 VARCHAR2(500)   
+GDS_AMT 상품가액 NUMBER(15)   
+ 
+리턴매개변수 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 등록 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+SAMPLE – INPUT 
+===== PAGE 33 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+33 / 52 
+{ 
+   "DATA":{ 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+"USER_ID":"NONSOFT", 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "RCPT_YMD":"20250515", 
+      "CUST_USE_NO":"12345678", 
+      "RCPT_DV":"01", 
+      "WORK_DV_CD":"01", 
+      "REQ_DV_CD":"01", 
+      "MPCK_KEY":"1234567893", 
+      "CAL_DV_CD":"1", 
+      "FRT_DV_CD":"03", 
+      "CNTR_ITEM_CD":"01", 
+      "BOX_TYPE_CD":"02", 
+      "BOX_QTY":"1", 
+      "FRT":"", 
+      "CUST_MGMT_DLCM_CD":"계약된 고객ID를 넣어 주세요", 
+      "SENDR_NM":"회사명", 
+      "SENDR_TEL_NO1":"02", 
+      "SENDR_TEL_NO2":"1577", 
+      "SENDR_TEL_NO3":"1111", 
+      "SENDR_CELL_NO1":"02", 
+      "SENDR_CELL_NO2":"1577", 
+      "SENDR_CELL_NO3":"1111", 
+      "SENDR_SAFE_NO1":"02", 
+      "SENDR_SAFE_NO2":"1577", 
+      "SENDR_SAFE_NO3":"1111", 
+      "SENDR_ZIP_NO":"000000", 
+      "SENDR_ADDR":"서울 송파구 무슨무슨로", 
+      "SENDR_DETAIL_ADDR":"000동 000호", 
+      "RCVR_NM":"CJ대한통운", 
+      "RCVR_TEL_NO1":"02", 
+      "RCVR_TEL_NO2":"1588", 
+      "RCVR_TEL_NO3":"1111", 
+      "RCVR_CELL_NO1":"02", 
+      "RCVR_CELL_NO2":"1588", 
+      "RCVR_CELL_NO3":"1111", 
+      "RCVR_SAFE_NO1":"02", 
+      "RCVR_SAFE_NO2":"1588", 
+      "RCVR_SAFE_NO3":"1111", 
+      "RCVR_ZIP_NO":"000000", 
+      "RCVR_ADDR":"경기도 의왕시 무슨무슨로", 
+      "RCVR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "ORDRR_NM":"테스트", 
+      "ORDRR_TEL_NO1":"02", 
+      "ORDRR_TEL_NO2":"1599", 
+      "ORDRR_TEL_NO3":"9999", 
+      "ORDRR_CELL_NO1":"02", 
+      "ORDRR_CELL_NO2":"1599", 
+      "ORDRR_CELL_NO3":"9999", 
+===== PAGE 34 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+34 / 52 
+      "ORDRR_SAFE_NO1":"02", 
+      "ORDRR_SAFE_NO2":"1599", 
+      "ORDRR_SAFE_NO3":"9999", 
+      "ORDRR_ZIP_NO":"11111", 
+      "ORDRR_ADDR":" 경기도 의왕시 무슨무슨로", 
+      "ORDRR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "INVC_NO":"111111111111", 
+      "ORI_INVC_NO":"", 
+      "ORI_ORD_NO":"", 
+      "COLCT_EXPCT_YMD":"", 
+      "COLCT_EXPCT_HOUR":"", 
+      "SHIP_EXPCT_YMD":"", 
+      "SHIP_EXPCT_HOUR":"", 
+      "PRT_ST":"02", 
+      "ARTICLE_AMT":"10000", 
+      "REMARK_1":"배송 요청사항", 
+      "REMARK_2":"", 
+      "REMARK_3":"", 
+      "COD_YN":"N", 
+      "ETC_1":"", 
+      "ETC_2":"", 
+      "ETC_3":"", 
+      "ETC_4":"", 
+      "ETC_5":"", 
+      "DLV_DV":"01", 
+      "RCPT_SERIAL":"", 
+      "ARRAY":[ 
+         { 
+            "MPCK_SEQ":"1", 
+            "GDS_CD":"11", 
+            "GDS_NM":"[6250.0] 테스트자료 ^^", 
+            "GDS_QTY":"1", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트1", 
+            "GDS_AMT":"111" 
+         }, 
+         { 
+            "MPCK_SEQ":"2", 
+            "GDS_CD":"22", 
+            "GDS_NM":"테스트2", 
+            "GDS_QTY":"2", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트2", 
+            "GDS_AMT":"222" 
+         }, 
+         { 
+            "MPCK_SEQ":"3", 
+            "GDS_CD":"33", 
+            "GDS_NM":"테스트3", 
+            "GDS_QTY":"3", 
+            "UNIT_CD":"33", 
+===== PAGE 35 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+35 / 52 
+ 
+ 
+ 
+  
+            "UNIT_NM":"테스트3", 
+            "GDS_AMT":"333" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT (Success Case) 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+SAMPLE – OUTPUT (Error Case) 
+{ 
+   "RESULT_CD": "E", 
+   "RESULT_DETAIL": "ORA-00001" 
+} 
+===== PAGE 36 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+36 / 52 
+1.3.12. (중개)상품추적(예약 정보 기준) 
+ 
+ 
+1) 전송 주기: 수시 
+2) 일반자료 구성 고객 대상으로 중개업체를 통하여 예약 등록 된 상품의 추적데이터 제공 
+3) 기준: 중개업체를 통하여 등록 된 예약 접수 일자 
+4) 송수신 절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) →고객사(결과 수신) 
+ 
+인터페이스명 상품추적 대량(중개) 
+인터페이스설명 일반자료 구성 고객 대상으로 중개업체를 통하여 예약 등록 된 상품의 추적데이터 제공 (1회 요청 
+시 최대500건) 
+Resource명 ReqBrkrMssGdsTrc Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+USER_ID 중개업체 ID 중개업체 계정(대한통운 담당자와 협의) VARCHAR2(20) NOT NULL 
+REQ_DT 추적데이터 등록일자 YYYYMMDD VARCHAR2(9) NOT NULL 
+SND_YN 
+수신 데이터 업데이
+트 여부 
+제공 받은 데이터 업데이트 여부 
+Y일 경우 고객사 수신 여부 확인 없이 업데이트
+를 하며, N일 경우 고객사의 업데이트 API 호출
+로 수신 여부 처리 함 
+업데이트 처리가 안될 경우 상품추적 요청 시 
+동일한 데이터가 계속 전송될 수 있음 
+VARCHAR2(1)  
+ 
+
+===== PAGE 37 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+37 / 52 
+리턴매개변수 
+ 
+ 
+  
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 조회 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+CUST_ID 고객번호 
+ARRAY[] 
+VARCHAR(20) 
+RCPT_DV 예약구분 VARCHAR(20) 
+INVC_NO 운송장 번호 VARCHAR(20) 
+CUST_USE_NO 주문번호 VARCHAR2(100) 
+CRG_ST 
+화물상태 
+(1.2.1참조) 
+VARCHAR2(2) 
+CRG_ST_NM 화물 상태명 VARCHAR2(50) 
+SCAN_YMD 스캔일자 VARCHAR(8) 
+SCAN_HOUR 스캔시간 VARCHAR(6) 
+DEALT_BRAN_NM 처리 점소명 VARCHAR2(50) 
+DEALEMP_NM 처리자 명 VARCHAR2(100) 
+ACPTR_NM 인수자 명 VARCHAR2(60) 
+NO_CLDV_RSN_CD 
+미집화/미배송 
+(1.2.2, 1.2.3 참조) 
+VARCHAR2(2) 
+DETAIL_RSN 
+미집화/미배송 상
+세 
+VARCHAR2(50) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "USER_ID":"DNNSAFT", 
+      "REQ_DT":"20201230", 
+      "SND_YN":"Y" 
+   } 
+} 
+===== PAGE 38 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+38 / 52 
+ 
+ 
+  
+SAMPLE – OUTPUT 
+{ 
+   "RESULT_CD":"S", 
+   "RESULT_DETAIL":"Success.", 
+   "DATA":[ 
+      { 
+         "CUST_ID":"303***96", 
+         "RCPT_DV":"일반", 
+         "INVC_NO":"384091***680", 
+         "CUST_USE_NO":"ON100349-11/20201224", 
+         "CRG_ST":"01", 
+         "CRG_ST_NM":"집화지시", 
+         "SCAN_YMD":"20201231", 
+         "SCAN_HOUR":"103334", 
+         "DEALT_BRAN_NM":"서울중랑신내우리", 
+         "DEALEMP_NM":"육**", 
+         "ACPTR_NM":"본인", 
+         "NO_CLDV_RSN_CD":null, 
+         "DETAIL_RSN":null 
+      } 
+ ] 
+} 
+===== PAGE 39 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+39 / 52 
+1.3.13. (중개)상품추적대량(예약 정보 기준)  수신 여부 확정 
+1) 전송주기: 수시 
+2) 상품추적대량 데이터 정상 수신 업데이트 (상품 추적 데이터를 정상적으로 수신 했음을 알리는 API) 
+3) 기준: 제공받은 상품추적 대량 데이터 
+4) 송수신절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 상품추적대량 수신여부 업데이트(중개) 
+인터페이스설명 상품추적대량 데이터 정상 수신 업데이트 
+Resource명 RcvBrkrMssGdsTrcCnfrm Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+USER_ID 중개업체 ID 중개업체 계정(대한통운 담당자와 협의) VARCHAR2(20) NOT NULL 
+CLNTNUM 고객 ID 
+ARRAY[] 
+VARCHAR2(20) NOT NULL 
+INVC_NO 운송장 번호 VARCHAR2(20) NOT NULL 
+CRG_ST 화물상태 (1.2.1참조) VARCHAR2(2) NOT NULL 
+ 
+리턴매개변수 
+ 
+ 
+ 
+ 
+ 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 업데이트 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+SAMPLE – INPUT 
+{ 
+   "DATA":{ 
+      "USER_ID":"NDDSAFT", 
+      "ARRAY":[ 
+         { 
+            "CLNTNUM":"12345678", 
+            "INVC_NO":"145234232123", 
+            "CRG_ST":"91" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+===== PAGE 40 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+40 / 52 
+1.3.14. (중개)예약취소 API 
+1) 전송주기: 수시 
+2) 고객사가 중개업체를 통하여 등록한 예약 정보를 실시간으로 취소 (운송장 출력 시 취소 불가능합니다.) 
+3) 기준: 고객사에서 등록한 예약정보 
+4) 송수신절차: 고객사(CJ API Request) → CJ(수신) → CJ(API Response) → 고객사(결과 수신) 
+ 
+인터페이스명 예약취소(중개) 
+인터페이스설명 고객사가 중개업체를 통하여 등록한 예약 정보를 실시간으로 취소 
+Resource명 CnclBrkrBook Document명 DATA 
+Method POST 매개변수 전달 방식 Raw Json(Body) 
+매개변수 
+Field Desc. Ex Type/Size Key 
+TOKEN_NUM 토큰번호 
+1Day 토큰발행 API를 통해 발급 받은 토큰번호 
+(CJ-Gateway-APIKey 동일 값 기술) 
+VARCHAR2(40) NOT NULL 
+USER_ID 중개업체 ID 중개업체 계정(대한통운 담당자와 협의) VARCHAR2(20) P .K 
+CUST_ID 고객 ID 계약된 고객사 코드 VARCHAR2(20) P .K 
+RCPT_YMD 접수일자 YYYYMMDD VARCHAR2(9) P .K 
+CUST_USE_NO 고객사용번호 
+기업고객이 관리하는 주문번호/ 영수번호 등 내
+부 관리번호 
+취소 시에 취소처리 기준(중복되면 취소 불가
+능) VARCHAR2(50) P .K 
+RCPT_DV 접수구분 01: 일반, 02: 반품 VARCHAR2(2) P .K 
+WORK_DV_CD 작업구분 코드 01: 일반 VARCHAR2(2) P .K 
+REQ_DV_CD 요청구분 코드 02: 취소만 가능 VARCHAR2(2) P .K 
+MPCK_KEY 합포장키 
+다수데이터를 한 송장에 출력할 경우 처리(ex:
+합포 없는 경우 YYYYMMDD_고객ID_고객사용번
+호 or YYYYMMDD_고객ID_운송장번호) 
+합포장 키와 합포장 순번은 반드시 무결성이 
+보장 되어야 합니다. 
+VARCHAR2(100) 
+P .K 
+CAL_DV_CD 정산구분 코드 01: 계약 운임 VARCHAR2(2) NOT NULL 
+FRT_DV_CD 운임구분 코드 01: 선불, 02: 착불, 03: 신용 VARCHAR2(2) NOT NULL 
+CNTR_ITEM_CD 계약품목 코드 01: 일반 품목 VARCHAR2(50) NOT NULL 
+BOX_TYPE_CD 박스타입 코드 
+01: 극소, 02: 소, 03: 중, 04: 대1,  05: 이형, 
+06: 취급제한, 07: 대2 VARCHAR2(2) NOT NULL 
+BOX_QTY 박스수량 택배 박스 수량 NUMBER(11) NOT NULL 
+FRT 운임 운임적용구분이 자료 운임일 경우 등록 처리 NUMBER(22)   
+CUST_MGMT_DLCM_CD 고객관리거래처코드 
+주관사 관리 협력업체 코드 혹은 택배사 관리 
+업체코드 
+VARCHAR2(30) 
+NOT NULL 
+SENDR_NM 보내는분 명   VARCHAR2(100) NOT NULL 
+SENDR_TEL_NO1 보내는분 전화번호1   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO2 보내는분 전화번호2   VARCHAR2(4) NOT NULL 
+SENDR_TEL_NO3 보내는분 전화번호3  VARCHAR2(4) NOT NULL 
+SENDR_CELL_NO1 보내는분 휴대폰번호1   VARCHAR2(4)   
+SENDR_CELL_NO2 보내는분 휴대폰번호2   VARCHAR2(4)   
+SENDR_CELL_NO3 보내는분 휴대폰번호3  VARCHAR2(4)   
+SENDR_SAFE_NO1 보내는분 안심번호1   VARCHAR2(4)   
+===== PAGE 41 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+41 / 52 
+SENDR_SAFE_NO2 보내는분 안심번호2   VARCHAR2(4)   
+SENDR_SAFE_NO3 보내는분 안심번호3   VARCHAR2(4)   
+SENDR_ZIP_NO 보내는분 우편번호   VARCHAR2(6) NOT NULL 
+SENDR_ADDR 보내는분 주소 보내는분 주소 VARCHAR2(150) NOT NULL 
+SENDR_DETAIL_ADDR 보내는분 상세주소 보내는분 상세 주소  VARCHAR2(300) NOT NULL 
+RCVR_NM 받는분 명 
+RCPT_DV(접수구분) = '02' ( 반품)시는 계약상 등
+록 된 업체 고정회수지 정보 입력. 이하 받는분 
+관련 정보도 고정 회수지에 해당하는 정보 입
+력 VARCHAR2(100) NOT NULL 
+RCVR_TEL_NO1 받는분 전화번호1   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO2 받는분 전화번호2   VARCHAR2(4) NOT NULL 
+RCVR_TEL_NO3 받는분 전화번호3  VARCHAR2(4) NOT NULL 
+RCVR_CELL_NO1 받는분 휴대폰번호1   VARCHAR2(4)   
+RCVR_CELL_NO2 받는분 휴대폰번호2   VARCHAR2(4)   
+RCVR_CELL_NO3 받는분 휴대폰번호3  VARCHAR2(4)   
+RCVR_SAFE_NO1 받는분 안심번호1   VARCHAR2(4)   
+RCVR_SAFE_NO2 받는분 안심번호2   VARCHAR2(4)   
+RCVR_SAFE_NO3 받는분 안심번호3   VARCHAR2(4)   
+RCVR_ZIP_NO 받는분 우편번호   VARCHAR2(6) NOT NULL 
+RCVR_ADDR 받는분 주소 받는분 주소 VARCHAR2(150) NOT NULL 
+RCVR_DETAIL_ADDR 받는분 상세주소 받는분 상세 주소 VARCHAR2(300) NOT NULL 
+ORDRR_NM 주문자 명   VARCHAR2(100)   
+ORDRR_TEL_NO1 주문자 전화번호1   VARCHAR2(4)   
+ORDRR_TEL_NO2 주문자 전화번호2   VARCHAR2(4)   
+ORDRR_TEL_NO3 주문자 전화번호3  VARCHAR2(4)   
+ORDRR_CELL_NO1 주문자 휴대폰번호1   VARCHAR2(4)   
+ORDRR_CELL_NO2 주문자 휴대폰번호2   VARCHAR2(4)   
+ORDRR_CELL_NO3 주문자 휴대폰번호3  VARCHAR2(4)   
+ORDRR_SAFE_NO1 주문자 안심번호1   VARCHAR2(4)   
+ORDRR_SAFE_NO2 주문자 안심번호2   VARCHAR2(4)   
+ORDRR_SAFE_NO3 주문자 안심번호3   VARCHAR2(4)   
+ORDRR_ZIP_NO 주문자 우편번호   VARCHAR2(6)   
+ORDRR_ADDR 주문자 주소 주문자 주소 VARCHAR2(150)   
+ORDRR_DETAIL_ADDR 주문자 상세주소 주문자 상세 주소 VARCHAR2(300)   
+INVC_NO 운송장 번호   VARCHAR2(20)   
+ORI_INVC_NO 원운송장 번호 
+RCPT_DV(접수구분) = '02' ( 반품,회수)시 대상이 
+되는 원 출고 운송장번호 VARCHAR2(20)   
+ORI_ORD_NO 원주문 번호  VARCHAR2(100)   
+COLCT_EXPCT_YMD 집화 예정일자 현재 사용 안함  VARCHAR2(9)   
+COLCT_EXPCT_HOUR 집화 예정시간 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_YMD 배송 예정일자 현재 사용 안함 VARCHAR2(9)   
+SHIP_EXPCT_HOUR 배송 예정시간 현재 사용 안함 VARCHAR2(9)   
+PRT_ST 운송장 출력상태 
+01: 미출력,  02: 선출력,  03: 선발번 (반품은 
+선발번이 없음) 반품 (RCPT_DV = '02') 진행 시, 
+PRT_ST = '01' 기재 
+VARCHAR2(3) 
+NOT NULL 
+ARTICLE_AMT 물품가액   NUMBER(15)   
+REMARK_1 비고1 배송 메세지1 (비고) VARCHAR2(1000)   
+REMARK_2 비고2 배송 메세지2 (보내는분 비고) VARCHAR2(1000)   
+REMARK_3 비고3 배송 메세지3 (받는분 비고) VARCHAR2(1000)   
+===== PAGE 42 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+42 / 52 
+COD_YN COD여부 N VARCHAR2(2)   
+ETC_1 기타1   VARCHAR2(500)   
+ETC_2 기타2   VARCHAR2(500)   
+ETC_3 기타3   VARCHAR2(500)   
+ETC_4 기타4   VARCHAR2(500)   
+ETC_5 기타5   VARCHAR2(500)   
+DLV_DV 택배구분 ‘01’: 택배 VARCHAR2(2) NOT NULL 
+RCPT_SERIAL 접수 시리얼 번호   VARCHAR2(50)   
+MPCK_SEQ 합포장 순번 합포장 처리건수가 다수일 경우 SEQ처리를 수
+행한다. 
+(합포 없는 경우 무조건 1 ) 
+ARRAY[] 
+NUMBER(20) P .K 
+GDS_CD 상품코드 VARCHAR2(20)   
+GDS_NM 상품명 VARCHAR2(500) NOT NULL 
+GDS_QTY 상품 수량 NUMBER(11)   
+UNIT_CD 단품 코드 VARCHAR2(20)   
+UNIT_NM 단품 명 VARCHAR2(500)   
+GDS_AMT 상품가액 NUMBER(15)   
+ 
+리턴매개변수 
+ 
+매개변수 
+Field Desc. Ex Type/Size 
+RESULT_CD 결과코드 등록 성공 시 ‘S’, 실패 시 ‘E’ VARCHAR2(10) 
+RESULT_DETAIL 결과상세 실패 시 에러내용 VARCHAR2(5000) 
+SAMPLE – INPUT (Success Case) 
+{ 
+   "DATA":{ 
+      "TOKEN_NUM":"23c5c70e-97f8-4a46-9d4a-8b15b098429z", 
+"USER_ID":"NONSOFT", 
+      "CUST_ID":"계약된 고객ID를 넣어 주세요", 
+      "RCPT_YMD":"20250515", 
+      "CUST_USE_NO":"12345678", 
+      "RCPT_DV":"01", 
+      "WORK_DV_CD":"01", 
+      "REQ_DV_CD":"02", 
+      "MPCK_KEY":"1234567893", 
+      "CAL_DV_CD":"1", 
+      "FRT_DV_CD":"03", 
+      "CNTR_ITEM_CD":"01", 
+      "BOX_TYPE_CD":"02", 
+      "BOX_QTY":"1", 
+      "FRT":"", 
+      "CUST_MGMT_DLCM_CD":"계약된 고객ID를 넣어 주세요", 
+      "SENDR_NM":"회사명", 
+      "SENDR_TEL_NO1":"02", 
+      "SENDR_TEL_NO2":"1577", 
+      "SENDR_TEL_NO3":"1111", 
+      "SENDR_CELL_NO1":"02", 
+      "SENDR_CELL_NO2":"1577", 
+      "SENDR_CELL_NO3":"1111", 
+      "SENDR_SAFE_NO1":"02", 
+===== PAGE 43 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+43 / 52 
+      "SENDR_SAFE_NO2":"1577", 
+      "SENDR_SAFE_NO3":"1111", 
+      "SENDR_ZIP_NO":"000000", 
+      "SENDR_ADDR":"서울 송파구 무슨무슨로", 
+      "SENDR_DETAIL_ADDR":"000동 000호", 
+      "RCVR_NM":"CJ대한통운", 
+      "RCVR_TEL_NO1":"02", 
+      "RCVR_TEL_NO2":"1588", 
+      "RCVR_TEL_NO3":"1111", 
+      "RCVR_CELL_NO1":"02", 
+      "RCVR_CELL_NO2":"1588", 
+      "RCVR_CELL_NO3":"1111", 
+      "RCVR_SAFE_NO1":"02", 
+      "RCVR_SAFE_NO2":"1588", 
+      "RCVR_SAFE_NO3":"1111", 
+      "RCVR_ZIP_NO":"000000", 
+      "RCVR_ADDR":"경기도 의왕시 무슨무슨로", 
+      "RCVR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "ORDRR_NM":"테스트", 
+      "ORDRR_TEL_NO1":"02", 
+      "ORDRR_TEL_NO2":"1599", 
+      "ORDRR_TEL_NO3":"9999", 
+      "ORDRR_CELL_NO1":"02", 
+      "ORDRR_CELL_NO2":"1599", 
+      "ORDRR_CELL_NO3":"9999", 
+      "ORDRR_SAFE_NO1":"02", 
+      "ORDRR_SAFE_NO2":"1599", 
+      "ORDRR_SAFE_NO3":"9999", 
+      "ORDRR_ZIP_NO":"11111", 
+      "ORDRR_ADDR":" 경기도 의왕시 무슨무슨로", 
+      "ORDRR_DETAIL_ADDR":"예시아파트 000동 000호", 
+      "INVC_NO":"", 
+      "ORI_INVC_NO":"", 
+      "ORI_ORD_NO":"", 
+      "COLCT_EXPCT_YMD":"", 
+      "COLCT_EXPCT_HOUR":"", 
+      "SHIP_EXPCT_YMD":"", 
+      "SHIP_EXPCT_HOUR":"", 
+      "PRT_ST":"01", 
+      "ARTICLE_AMT":"10000", 
+      "REMARK_1":"배송 요청사항", 
+      "REMARK_2":"", 
+      "REMARK_3":"", 
+      "COD_YN":"N", 
+      "ETC_1":"", 
+      "ETC_2":"", 
+      "ETC_3":"", 
+      "ETC_4":"", 
+      "ETC_5":"", 
+      "DLV_DV":"01", 
+      "RCPT_SERIAL":"", 
+===== PAGE 44 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+44 / 52 
+ 
+ 
+      "ARRAY":[ 
+         { 
+            "MPCK_SEQ":"1", 
+            "GDS_CD":"11", 
+            "GDS_NM":"[6250.0] 테스트자료 ^^", 
+            "GDS_QTY":"1", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트1", 
+            "GDS_AMT":"111" 
+         }, 
+         { 
+            "MPCK_SEQ":"2", 
+            "GDS_CD":"22", 
+            "GDS_NM":"테스트2", 
+            "GDS_QTY":"2", 
+            "UNIT_CD":"11", 
+            "UNIT_NM":"테스트2", 
+            "GDS_AMT":"222" 
+         }, 
+         { 
+            "MPCK_SEQ":"3", 
+            "GDS_CD":"33", 
+            "GDS_NM":"테스트3", 
+            "GDS_QTY":"3", 
+            "UNIT_CD":"33", 
+            "UNIT_NM":"테스트3", 
+            "GDS_AMT":"333" 
+         } 
+      ] 
+   } 
+} 
+SAMPLE – OUTPUT (Success Case) 
+{"RESULT_CD":"S","RESULT_DETAIL":"Success."} 
+SAMPLE – OUTPUT (Error Case) 
+{ 
+   "RESULT_CD": "E", 
+   "RESULT_DETAIL": "ORA-00001" 
+} 
+===== PAGE 45 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+45 / 52 
+1.3.15. 운영 승인 요청 작업 
+테스트 작업 완료 후 운영 승인 처리를 위하여 아래 양식을 작성 후 계약지사 담당자와 협의 바랍니다. 
+(계약지사 담당자로부터 개발요청(SR)건이 접수된 건에 대하여 오픈을 진행합니다.) 
+ 
+대한통운 관리 담당 정보 
+오픈 요청 일시 2021. 02. 
+대한통운 관리 부서 OOO 지사 
+대한통운 관리 담당 사원(연락처) 담당자 명 (010-000-0000) 
+고객사 정보 
+고객사 코드 ********* 
+고객사 명 업체명 
+월 예상 출고 량 00,000 개 
+API 연동 시간대 14:00 ~ 18:00 
+전산 담당 직원 정보 (연락처) 담당자명 (000-000-000) 
+출력 주체 여부 고객사 자체 출력 / 로이스 기업고객시스템 
+API 사용 유형 비고 
+사용/미사용 상품추적(운송장번호기준)   
+사용/미사용 상품추적(예약정보기준)   
+사용/미사용 상품추적(예약정보기준)수신여부확정   
+사용/미사용 예약 접수   
+사용/미사용 예약 취소   
+사용/미사용 운송장번호생성 고객사 운송장 자체 출력 시 필수 사용 
+
+===== PAGE 46 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+46 / 52 
+사용/미사용 주소 정제 
+고객사 운송장 자체 출력 시 필수 사용 
+예약 접수 시 필수 사용 
+ 
+1.4. 자주하는 질문 (FAQ) 
+1.4.1. 개발 1Day토큰 API 호출 시 고객사 코드가 존재하지 않음 메시지 발생 
+1. CUST_ID의 고객사번호와 BIZ_REG_NUM의 사업자 번호 매칭 여부 확인 
+  여기서 사업자 번호는 대한통운에 등록 된 청구 사업자 번호이며, 대표 사업자 번호와 상이 할 수 있음 
+  대한통운 택배 계약 시 등록된 사업자 번호를 확인하여 주시기 바랍니다. 
+ 
+2. 개발 API의 경우 개발 DB와 연동하므로 실제 계약된 CJ대한통운 택배고객사코드가 없을 수 있습니다. 
+이러한 상황 시 로그인하신 후 택배 API 리스트 클릭 후 랜덤 하게 한 API의 세부 정보 보기 클릭하면,  
+오른쪽 상단 계약이관 메뉴를 확인 할 수 있습니다. 
+ 
+ 
+ 
+계약이관 메뉴를 클릭하면 팝업이 뜨며, 고객사번호 텍스트 입력항목에 테스트를 원하는 실 고객사번호 입력 
+후 계약이관을 클릭하면 해당 고객사번호에 해당하는 고객정보를 운영에서 개발로 이관 진행하며, 이관 완료 
+후에도 1Day 토큰 발행 API 응답이 고객사 코드 존재확인으로 리턴 될 경우는 해당 고객사 코드에 대한 정보
+를 openapi@cjlogistics.com 로 문의하여 주시기 바랍니다. 
+  
+
+===== PAGE 47 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+47 / 52 
+1.4.2. 사업자 등록 번호 수정 방법 
+개발자 포털에서 로그인 하신 다음 메뉴 리스트 오른쪽 화면 끝의 아이콘을 클릭하시면 아래와 같은 화면이 
+나타납니다. 하단의 로그인 메일 계정을 클릭하시면 개인정보를 수정할 수 있는 화면으로 이동합니다. 
+ 
+ 
+ 
+자기 정보를 수정할 수 있는 사용자 프로필 화면으로 이동을 하며 아래쪽에 사업자 등록번호 부분에서 수정하
+시고 변경 내용 저장 버튼을 누르시면 됩니다. 
+ 
+ 
+ 
+  
+
+===== PAGE 48 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+48 / 52 
+1.4.3. 회원가입에서 메일로 인증번호가 오지 않는 경우 
+회원가입 화면에서 인증번호를 요청하신 버튼을 누른 다음에 몇 분을 기다리고 인증번호 받기를 다시 시도해
+도 메일이 오지 않는 경우에는 2가지 경우입니다. 사용하고 계신 메일시스템에서 메일을 수신하고 스팸으로 분
+류하는 경우이거나 아니면 저희가 보내는 인증번호 메일을 거부하는 경우입니다. 이런 경우에는 포털에서 제공
+하는 메일시스템이나 기타 다른 이메일 시스템을 활용하여 인증번호를 받으시기 바랍니다. 
+ 
+ 
+ 
+ 
+ 
+1.4.4. POSTMAN 샘플 파일 
+API 테스트 툴 중에 가장 많이 사용하는 POSTMAN 샘플 파일을 자료실에 올려 놓았습니다. 
+메뉴 리스트에서 택배 자료실을 선택하시면 2번째 메뉴에 POSTMAN JSON 파일을 받으실 수 있습니다. 
+ 
+ 
+ 
+POSTMAN을 설치하시고 POSTMAN 메뉴에서 File을 선택하시고 Import… 메뉴를 선택하시고 다운 받은 파일
+을 선택하시면 Collection리스트에 CJ대한통운 택배 API 리스트가 나타납니다. 
+ 
+
+===== PAGE 49 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+49 / 52 
+ 
+ 
+가장 먼저 하실 일은 API를 사용하기 위한 인증키를 받는 작업을 우선 수행하여야 합니다. 
+OneDayToken을 선택하고 SEND를 누르시면  
+인증키를 회신합니다. 
+ 
+받은키는 다른 API 호출에서 반드시 사용하여야 합니다. 
+ 
+앞에서 받은 OneDayToken 응답의 키값을 CJ-Gateway-APIKey에 값으로 넣어 주셔야 합니다. 
+ 
+Body 부분에도 TOKEN_NUM에 같은 값을 넣어 주어야 합니다. 
+ 
+
+===== PAGE 50 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+50 / 52 
+ 
+ 
+다른 API들도 같은 방식으로 적용 주셔야 API가 제대로 동작을 합니다. 
+ 
+1.4.5. 운영 연동 승인 절차는 어떻게 되나요? 
+ 개발 테스트가 완료된 후 대한통운 내부에서 테스트 결과를 검증 완료되어야 인증 처리가 가능합니다. 
+운송장 자체 출력 고객사의 경우는 운송장 샘플 출력 후 고객사 자체 스캔 검증까지 완료하시고 자료를 샘플 
+운송장을 보내 주셔야 합니다. 
+각종 문의 및 진행 시 문의는 openapi@cjlogistics,com 으로 보내주시면 지속적인 답변을 드리고 있습니다.  
+ 
+1.4.6. 기존 Interface 방식과 API 서비스를 병행 처리 하는 것이 가능한가요? 
+기존 인터페이스 방식의 서비스 이용하고 계신 고객사에서 문의 주신 내용입니다. 
+대한통운 운영 정책 상 기존 방식 혹은 신규 API 방식 중 1개를 선택하여 Interface 진행을 원칙으로 하고 있
+습니다. 
+예약 접수/ 상품 추적 모두 동일한 정책을 적용하고 있으니 참고하시기 바랍니다. 
+ 
+1.4.7. 중개 업체를 이용하는 업체입니다. API 서비스 이용 병행 사용하고 싶습니다. 
+택배 계약 코드가 동일한 경우 데이터 중복, 누락 등의 이슈 사항으로 병행 사용을 제한 하고 있습니다. 
+중개업체 이용 및 자체 개발 API를 사용하고자 하실 경우 별도의 계약 코드로 분리 되어 있을 경우 가능합니
+다. 
+ 
+
+===== PAGE 51 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+51 / 52 
+1.4.8. 운송장 출력 샘플 제작 및 검증 절차에 대하여 문의 드립니다. 
+고객사 자체적을 운송장을 출력 하고자 하실 경우 다음과 같이 포털내 자료실을 검색하여 출력 폼을 확인하셔
+야 합니다. 
+ 
+ 
+ 
+다운로드 버튼을 클릭 하시면 표준 운송장 가이드 문서가 나타납니다. 
+해당 디자인과 동일하게 작성하시어 샘플 테스트 진행하시면 되십니다. 
+ 
+각 데이터의 위치/폰트/ 바코드 등을 가이드 기준으로 디자인해 주셔야 하며, 특히 바코드 출력 후 자체적으로 
+스캔 여부에 대한 검증을 먼저 처리하여야 합니다. 
+ 
+모든 작업 및 검증이 완료된 후 해당 운송장 샘플 이미지를 openapi@cjlogistics.com 으로 보내주시면 대한통
+운 내부에서 2차검증 진행 합니다. 
+ 
+참고 : 바코드 스캔 APP 안내 (자료실 내 리스트 존재) 
+운송장 샘플 바코드 스캔 검증 어플 안내 
+운송장 샘플 출력 후 아래 어플을 기종에 따라 다운 및 설치 후 샘플 운송장 스캔 검증에 활용하여 주시기 
+바랍니다. 
+ 
+OPEN API 운송장 샘플에 대한 바코드 검증용 APP( Barcode Scanner / Cognex Corporation ) 
+Google Play 
+https://play.google.com/store/apps/details?id=com.manateeworks.barcodescanners&hl=en&gl=US  
+App Store 
+https://apps.apple.com/us/app/barcode-scanners/id504201315 
+추가적으로 고객사의 개발 환경 등이 상이하여, 개발 가이드만 제공하고 있습니다.  
+
+===== PAGE 52 =====
+[API] CJ대한통운 택배 표준 API                                         Developer Guide 
+ 
+52 / 52 
+레포트 툴(OZ Report, Report Designer등)이나 고객사 환경에 맞춰 운송장 디자인 진행하시면 됩니다. 
+1.4.9. 운송장 번호 생성 API 관련 문의 사항 
+1.4.9.1. 운송장 번호를 생성 후 사용 기간의 제약이 있나요?  
+운송장 번호 생성 API를 사용하신 경우는 생성 당일 사용을 원칙으로 하고 있습니다. 사전에 번호 대역을 생성
+하여 추후 사용하실 경우 운송장 번호의 재사용/ 미사용 등 여러 가지 이슈 사항이 발생될 가능성이 높습니다. 
+당일/불가피한경우 익일 내 사용을 권장 드립니다. 
+미사용이 다수 발생할 경우 운송장 번호 생성 API 호출이 제약될 수 있습니다. 
+  
+1.4.9.1. 운송장 번호 생성을 여러 건을 한번에 생성할 수 없나요 ?  
+운송장 번호 생성 API사용 원칙은 1회 호출 시 1건 생성을 원칙을 합니다. 
+운영 안정성을 확보하기 위한 대한통운의 운영 정책입니다. 
+  
+1.4.10. 예약 접수 API 관련 문의 사항  
+1.4.10.1. 예약 접수는 단건 접수만 허용하나요?  
+네 맞습니다.  
+데이터 처리 속도, 데이터 누락 방지 등의 기준에 따라 모든 API는 단건 호출 기준을 원칙을 하고 있습니다. 
+  
+1.4.10.2. 예약 취소가 불가능 한 경우는 무엇인가요?  
+예약 접수 취소가 불가능한 경우는 여러가지 사유로 존재 합니다. 
+예약 취소 처리 불가 유형 
+1. 운송장 번호를 생성하여 자체 출력하는 고객사의 경우 예약 접수 한 경우(상품 발송을 하지 않으면 택배운
+임에서 제외 됩니다.) 이는 오프라인 상태의 출고 상태를 확인 할 수 없기 때문 입니다. 
+2. 운송장 스캔이 있는 경우 (당사 택배기사님이 상품을 인수한 것으로 간주하여 취소처리 가 불가합니다.) 
+3. 대한통운에서 운송장 출력 처리를 할 경우 출력 이후 취소가 불가합니다. 
+ 
+1.4.10.3. 예약 접수 후 상품 추적 서비스는 언제부터 가능한가요? 
+예약 접수 후 상품추적이 안되는 이유는 다음과 같습니다. 
+예약 접수 이후 실물 택배상품이 대한통운에 전달되어 상품 스캔 작업이 있어야 상품추적이 가능합니다. 
+예약의 경우 실제 출고 여부를 확인할 수 없는 상태이기 때문에 실제 스캔 작업 이후부터 상품추적이 
+가능합니다. 
+ 

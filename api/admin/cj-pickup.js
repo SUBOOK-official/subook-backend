@@ -178,20 +178,22 @@ function parseExtraHeaders() {
   }
 }
 
-// CJ 게이트웨이 인증 헤더. 모든 API 공통으로 CJ-Gateway-APIKey 헤더를 요구한다.
-function buildCjHeaders() {
-  const gatewayKey =
-    process.env.CJ_GATEWAY_API_KEY ||
-    process.env.CJ_API_KEY ||
-    process.env.CJ_LOGISTICS_API_KEY ||
-    "";
-
-  return {
+// CJ 게이트웨이 인증 헤더.
+// ⚠ 규격서 V3.9.4 p6/p9 확정: 헤더 CJ-Gateway-APIKey 값 규칙 —
+//   · 1Day 토큰 발행(ReqOneDayToken): Key 생략
+//   · 그 외 업무 API: ReqOneDayToken이 발급한 "1Day 토큰"과 동일 값을 헤더에 기술
+// (2026-07-04까지는 규격서의 예시 게이트웨이키를 넣어 업무 API가 전부 401 인증실패였음.
+//  2026-07-05 규격서 확인 후 채번(ReqInvcNo) 200 성공으로 검증됨 → CJ 승인 문제 아니었음.)
+function buildCjHeaders(apiKey) {
+  const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "CJ-Gateway-APIKey": gatewayKey,
     ...parseExtraHeaders(),
   };
+  if (apiKey) {
+    headers["CJ-Gateway-APIKey"] = apiKey;
+  }
+  return headers;
 }
 
 function getCjConfig() {
@@ -334,7 +336,7 @@ function makeCjBusinessError(body, fallbackCode) {
   return error;
 }
 
-async function postCj(cfg, endpoint, data) {
+async function postCj(cfg, endpoint, data, apiKey) {
   if (!cfg.baseUrl) {
     const error = new Error("CJ_API_BASE_URL is required. Set CJ_LOGISTICS_MOCK=true for local mock mode.");
     error.code = "CJ_CONFIG_MISSING";
@@ -344,7 +346,7 @@ async function postCj(cfg, endpoint, data) {
 
   const { body } = await requestJsonWithRetry(joinUrl(cfg.baseUrl, endpoint), {
     method: "POST",
-    headers: buildCjHeaders(),
+    headers: buildCjHeaders(apiKey),
     body: JSON.stringify({ DATA: data }),
   });
 
@@ -364,10 +366,11 @@ async function getOneDayToken(cfg) {
     throw error;
   }
 
+  // 토큰 발행은 헤더 Key 생략 (규격서 p6)
   const body = await postCj(cfg, cfg.tokenEndpoint, {
     CUST_ID: cfg.custId,
     BIZ_REG_NUM: cfg.bizRegNum,
-  });
+  }, "");
 
   if (!isCjSuccess(body)) {
     throw makeCjBusinessError(body, "CJ_TOKEN_FAILED");
@@ -387,10 +390,11 @@ async function getOneDayToken(cfg) {
 
 // 채번(운송장번호 생성): { DATA: { CLNTNUM, TOKEN_NUM } } → DATA.INVC_NO
 async function reqInvcNo(cfg, token) {
+  // 업무 API: 헤더 CJ-Gateway-APIKey = 1Day 토큰 (규격서 p6/p9)
   const body = await postCj(cfg, cfg.invcNoEndpoint, {
     CLNTNUM: cfg.custId,
     TOKEN_NUM: token,
-  });
+  }, token);
 
   if (!isCjSuccess(body)) {
     throw makeCjBusinessError(body, "CJ_INVCNO_FAILED");
@@ -570,9 +574,9 @@ async function registerCjPickup(pickupRequest, { token, cfg }) {
   // 1) 채번 → 운송장번호 확보
   const invcNo = await reqInvcNo(cfg, token);
 
-  // 2) 예약접수
+  // 2) 예약접수 (헤더 키 = 토큰)
   const payload = buildRegBookPayload(pickupRequest, { token, invcNo, cfg });
-  const body = await postCj(cfg, cfg.regBookEndpoint, payload);
+  const body = await postCj(cfg, cfg.regBookEndpoint, payload, token);
 
   if (!isCjSuccess(body)) {
     throw makeCjBusinessError(body, "CJ_REGBOOK_FAILED");

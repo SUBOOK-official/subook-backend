@@ -173,19 +173,18 @@ function parseExtraHeaders() {
   }
 }
 
-function buildCjHeaders() {
-  const gatewayKey =
-    process.env.CJ_GATEWAY_API_KEY ||
-    process.env.CJ_API_KEY ||
-    process.env.CJ_LOGISTICS_API_KEY ||
-    "";
-
-  return {
+// ⚠ 규격서 V3.9.4 p6/p9: 헤더 CJ-Gateway-APIKey — 토큰 발행은 Key 생략,
+// 그 외 업무 API는 발급받은 "1Day 토큰"과 동일 값을 헤더에 기술.
+function buildCjHeaders(apiKey) {
+  const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "CJ-Gateway-APIKey": gatewayKey,
     ...parseExtraHeaders(),
   };
+  if (apiKey) {
+    headers["CJ-Gateway-APIKey"] = apiKey;
+  }
+  return headers;
 }
 
 function makeTimeoutError(timeoutMs) {
@@ -268,7 +267,7 @@ function getCjMessage(body) {
   return String(body?.RESULT_DETAIL ?? "").trim();
 }
 
-async function postCj(cfg, endpoint, data) {
+async function postCj(cfg, endpoint, data, apiKey) {
   if (!cfg.baseUrl) {
     const error = new Error("CJ_API_BASE_URL is required. Set CJ_LOGISTICS_MOCK=true for local mock mode.");
     error.code = "CJ_CONFIG_MISSING";
@@ -278,7 +277,7 @@ async function postCj(cfg, endpoint, data) {
 
   const { body } = await requestJsonWithRetry(joinUrl(cfg.baseUrl, endpoint), {
     method: "POST",
-    headers: buildCjHeaders(),
+    headers: buildCjHeaders(apiKey),
     body: JSON.stringify({ DATA: data }),
   });
 
@@ -297,10 +296,11 @@ async function getOneDayToken(cfg) {
     throw error;
   }
 
+  // 토큰 발행은 헤더 Key 생략 (규격서 p6)
   const body = await postCj(cfg, cfg.tokenEndpoint, {
     CUST_ID: cfg.custId,
     BIZ_REG_NUM: cfg.bizRegNum,
-  });
+  }, "");
 
   if (!isCjSuccess(body)) {
     const error = new Error(getCjMessage(body) || "CJ 토큰 발급에 실패했습니다.");
@@ -402,11 +402,12 @@ async function fetchCjTracking(waybillNo) {
   const cfg = getCjConfig();
   const token = await getOneDayToken(cfg);
 
+  // 업무 API: 헤더 CJ-Gateway-APIKey = 1Day 토큰 (규격서 p6/p9)
   const body = await postCj(cfg, cfg.trackingEndpoint, {
     CLNTNUM: cfg.custId,
     INVC_NO: waybillNo,
     TOKEN_NUM: token,
-  });
+  }, token);
 
   if (!isCjSuccess(body)) {
     const error = new Error(getCjMessage(body) || "CJ 배송 추적 조회에 실패했습니다.");

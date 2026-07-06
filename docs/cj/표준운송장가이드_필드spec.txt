@@ -1,0 +1,71 @@
+
+===== PAGE 1 (842 x 595 pt) =====
+※운송장 Size : 123.00 x 100.00 (mm) 
+※단위 : mm
+번호 이름 폰트 크기 참고사항 주소정제 항목 (DBTODB) 주소정제 항목 (WSDL) 주소정제 항목 (OPENAPI-REST) 주소정제 항목 (REST-API / getAddressInformation.do)
+1 운송장번호 Noto Sans Korea Bold / HY견고딕 12
+2 접수일자 Noto Sans Korea Bold / HY견고딕 8
+3 출력매수 Noto Sans Korea Bold / HY견고딕 8
+4 재출력여부 Noto Sans Korea Bold / HY견고딕 8 REPRINTYN + OUPPUR 값으로 조합
+5 분류코드바코드 9 바코드타입: CODE128A(MOD103) p_clsfcd dlvClsfCd CLSFCD p_dlvclsfcd
+6 분류코드(대분류코드 4자리+SUB코드1, SUB코드2) Noto Sans Korea Bold / HY견고딕 36+53+36 주소정제API항목 중 DLVCLSFCD + SUBCLSFCD
+SUBCLFCD 값 중 "g" 의 운송장바코드 침범으로 위치 조정 필수
+p_clsfcd + '-' + p_subclsfcd dlvClsfCd + '-' + dlvSubClsfCd CLSFCD + '-' + SUBCLSFCD p_dlvclsfcd + '-' + p_dlvsubclsfcd
+Noto Sans Korea Bold / HY견고딕
+Noto Sans Korea Bold / HY견고딕
+Noto Sans Korea Bold / HY견고딕
+8 운송장번호바코드 9 바코드타입: CODE128C(MOD103)
+9 받는분주소 Noto Sans Korea Bold / HY견고딕 9 받는분주소 + 주소2 + 상세주소
+10 주소약칭 Noto Sans Korea Bold / HY견고딕 24  ** 샘플 이미지 참고하여 주소 약칭 넣어주시길 바랍니다. p_clsfaddr rcvrClsfAddr CLSFADDR p_rcvrclsfaddr
+Noto Sans Korea Bold / HY견고딕
+Noto Sans Korea Bold / HY견고딕
+12 운임그룹조정 + 수량 Noto Sans Korea Bold / HY견고딕 10 운임그룹조정 + 수량
+13 운임 Noto Sans Korea Bold / HY견고딕 10 총운임(기본운임+기타운임)
+14 운임구분 Noto Sans Korea Bold / HY견고딕 10
+15 보내는분주소 Noto Sans Korea Bold / HY견고딕 8
+16 상품명 Noto Sans Korea Bold / HY견고딕 9 상품정보 : 상품명/내품명/수량 등
+17 배송메세지 Noto Sans Korea Bold / HY견고딕 8 배송메세지
+18 배달점소-별칭 Noto Sans Korea Bold / HY견고딕 18
+주소정제 수신값 중 "전담권역"이 "01"인 경우,
+"배송사원명"은 "##" 수신함
+▶ 전담권역 "01" 또는 배송사원명 "##" 수신 시,
+     운송장출력 上 "배달점소-별칭" 표시
+p_clldlvbranshortnm + '-' + p_clldlvempnicknm dlvPreArrBranShortNm + '-' + dlvPreArrEmpNickNm CLLDLVBRANNM + '-' + CLLDLVEMPNICKNMp_dlvprearrbranshortnm + '-' + p_dlvprearrempnicknm
+19 특수문자1 Noto Sans Korea Bold / HY견고딕 30 권내배송코드 (P0~P50) p_p2pcd p2pcd P2PCD p_p2pcd
+※ 운송장 마스킹 규칙
+1. CJ대한통운 운송장 출력 마스킹 규칙
+국토교통부에서 배포한 운송장 마스킹 통일 규칙 下 CJ대한통운 운송장 출력 마스킹 기준 강화
+구분 내용
+적용대상 "송/수화인" 적용
+이름 두 번쨰 글자
+전화번호 마지막 4자리
+2. 국토교통부 운송장 출력 마스킹 규칙
+2025년 10월 국토교통부 배포, 마스킹 기본 규칙 권고안
+구분 내용
+적용대상 수화인 이름, 연락처
+이름(국문) 첫 번째와 세 번째 글자 외 모든 글자
+이름(국문 外) 네 자리 글자까지 국문 동일
+다섯자리 이상 글자는 네 자리 이후 마스킹
+전화번호 마지막 4자리
+※ 상기 표기된 분류코드, 운송장번호 바코드와 공간 間 간격은 참고사항으로 다른 항목과 겹치지 않고,
+   바코드 리딩에 이슈가 없도록 출력 양식 세팅 요청드립니다.
+예약구분 일반 : 마스킹 해제 (기본값)
+예약구분 반품 : 마스킹 (기본값)
+ * 마스킹 기준 : 이름(두번째 글자) / 전화번호(마지막 4자리)
+7보내는분성명+전화번호11
+예약구분 일반 : 마스킹 (기본값)
+ * 마스킹 기준 : 이름(두번째 글자) / 전화번호(마지막 4자리)
+예약구분 반품 : 마스킹 해제 (기본값)
+** 상세 출력 및 마스킹 기준 아래 별첨
+10받는분성명+전화번호+휴대폰7
+비고
+ -예약구분 일반/반품에 따라 상이할 수 있음
+- 세글자 출력 유지
+- 국문 外 규칙 동일
+* 예) (두글자) 홍길 → 홍*, (세글자) 홍길동 → 홍*동, (네글자) 홍길동홍 → 홍*동
+      (휴대전화) 010-1234-****, (유선전화) 02-1234-****
+* 공백은 글자 수에서 제외
+예시
+(두글자) 홍길 → 홍*, (세글자) 홍길동 → 홍*동, (네글자) 홍길동홍 → 홍*동*
+(두글자) AB → A*, (세글자) ABC → A*C, (네글자) ABCD → A*C*
+(다섯글자) ABCDE → ABCD*, (일곱글자) ABCDEFG → ABCD***

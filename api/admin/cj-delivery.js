@@ -21,6 +21,7 @@ const CJ_CARRIER_NAME = "CJ대한통운";
 const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
 const DEFAULT_INVCNO_ENDPOINT = "/ReqInvcNo";
 const DEFAULT_REGBOOK_ENDPOINT = "/RegBook";
+const DEFAULT_ADDR_ENDPOINT = "/ReqAddrRfnSm";
 
 const ORDER_SELECT = `
   id,
@@ -195,6 +196,7 @@ function getCjConfig() {
     tokenEndpoint: process.env.CJ_TOKEN_ENDPOINT || DEFAULT_TOKEN_ENDPOINT,
     invcNoEndpoint: process.env.CJ_INVCNO_ENDPOINT || DEFAULT_INVCNO_ENDPOINT,
     regBookEndpoint: process.env.CJ_REGBOOK_ENDPOINT || DEFAULT_REGBOOK_ENDPOINT,
+    addrEndpoint: process.env.CJ_ADDR_ENDPOINT || DEFAULT_ADDR_ENDPOINT,
 
     // 고객사코드(CUST_ID/CLNTNUM) + 사업자등록번호(토큰 발급에 필요) — 계약 후 발급
     custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
@@ -404,6 +406,43 @@ async function reqInvcNo(cfg, token) {
   return invcNo;
 }
 
+// 주소정제(ReqAddrRfnSm): 라벨 라우팅 데이터(분류코드/주소약칭/배송점소/P2P) 확보.
+// 실패해도 배송접수는 계속 진행 — 라벨 라우팅 데이터만 비게 두고 운영자가 재시도/보정.
+async function reqAddrRefine(cfg, token, address) {
+  try {
+    const body = await postCj(cfg, cfg.addrEndpoint, {
+      CLNTNUM: cfg.custId,
+      CLNTMGMCUSTCD: cfg.custId,
+      ADDRESS: String(address || "").trim(),
+      TOKEN_NUM: token,
+    }, token);
+    if (!isCjSuccess(body)) {
+      return null;
+    }
+    const d = body?.DATA || {};
+    return {
+      clsfCd: d.CLSFCD ?? null, // 분류코드(대분류)
+      subClsfCd: d.SUBCLSFCD ?? null, // 서브코드
+      clsfAddr: d.CLSFADDR ?? null, // 주소약칭
+      clldlvBranNm: d.CLLDLVBRANNM ?? null, // 배송집배점명
+      clldlvEmpNickNm: d.CLLDLVEMPNICKNM ?? null, // 배송사원 별칭(권역)
+      rspsDiv: d.RSPSDIV ?? null, // 전담권역
+      p2pCd: d.P2PCD ?? null, // 권내배송코드
+    };
+  } catch (error) {
+    console.error("[cj-delivery] addr refine failed", error?.message);
+    return null;
+  }
+}
+
+// 주소정제 입력용 전체 주소 문자열.
+function buildFullAddress(order) {
+  return [order.shipping_address_line1, order.shipping_address_line2]
+    .map((s) => String(s || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 // 전화번호를 CJ 규격(3분할: NO1/NO2/NO3)으로 분리.
 function splitPhone(rawPhone) {
   const digits = String(rawPhone || "").replace(/\D/g, "");
@@ -556,14 +595,21 @@ async function registerCjDelivery(order, { token, cfg }) {
     return {
       trackingNumber,
       cjRequestId: `MOCK-${order.order_number}`,
+      addr: {
+        clsfCd: "2T01", subClsfCd: "1h", clsfAddr: "샘플주소약칭",
+        clldlvBranNm: "서울강남서", clldlvEmpNickNm: "H03-6구역", rspsDiv: "01", p2pCd: null,
+      },
       rawResponse: { mock: true, RESULT_CD: "S", trackingNumber },
     };
   }
 
-  // 1) 채번 → 운송장번호 확보
+  // 1) 주소정제 → 라벨 라우팅 데이터(분류코드/주소약칭/배송점소). 실패해도 접수는 진행.
+  const addr = await reqAddrRefine(cfg, token, buildFullAddress(order));
+
+  // 2) 채번 → 운송장번호 확보
   const invcNo = await reqInvcNo(cfg, token);
 
-  // 2) 예약접수 (헤더 키 = 토큰)
+  // 3) 예약접수 (헤더 키 = 토큰)
   const payload = buildRegBookPayload(order, { token, invcNo, cfg });
   const body = await postCj(cfg, cfg.regBookEndpoint, payload, token);
 
@@ -575,6 +621,7 @@ async function registerCjDelivery(order, { token, cfg }) {
   return {
     trackingNumber: invcNo,
     cjRequestId: invcNo,
+    addr,
     rawResponse: body,
   };
 }
@@ -687,6 +734,15 @@ async function processDeliveryRegistration({ supabase, orderId, force, token, cf
       status: "registered",
       trackingNumber: cjResult.trackingNumber,
       cjRequestId: cjResult.cjRequestId,
+      // 라벨 렌더용 데이터 — 라우팅(주소정제) + 발송인(수북). 수취인은 order에 있음.
+      addr: cjResult.addr,
+      sender: {
+        name: cfg.warehouseName,
+        phone: cfg.warehousePhone,
+        zip: cfg.warehousePostalCode,
+        addr1: cfg.warehouseAddressLine1,
+        addr2: cfg.warehouseAddressLine2,
+      },
       order: updatedOrder,
     };
   } catch (error) {

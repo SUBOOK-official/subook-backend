@@ -275,6 +275,25 @@ async function sendKakaoAlimtalk({ recipientPhone, notificationType, templateVar
   }
 }
 
+// ── 멱등성 키 ────────────────────────────────────────────────
+// 같은 비즈니스 이벤트(타입:참조:수신번호)의 중복 발송을 DB unique 인덱스로 차단한다.
+// - ref가 있는 발송(운영 트리거 전부): 이벤트당 1회. 수신번호가 바뀌면(번호 정정 후 재발송) 새 키.
+// - ref가 없는 발송(테스트 등): 분 단위 버킷으로 연타만 방지.
+// - allowDuplicate=true(향후 재전송 기능용): 키 없이 발송 → 중복 검사 우회.
+function buildIdempotencyKey({ notificationType, refType, refId, toDigits, allowDuplicate }) {
+  if (allowDuplicate) {
+    return null;
+  }
+  if (refType && refId !== null && refId !== undefined && refId !== "") {
+    return `${notificationType}:${refType}:${refId}:${toDigits}`;
+  }
+  const minuteBucket = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  return `${notificationType}:phone:${toDigits}:${minuteBucket}`;
+}
+
+// pending 선점 후 함수가 죽어 키가 영구 점유되는 것을 방지 — 이 시간 지난 pending은 회수해 재발송
+const STALE_PENDING_RECLAIM_MS = 10 * 60 * 1000;
+
 // ── 인증/설정 헬퍼 ───────────────────────────────────────────
 function getSupabaseConfig() {
   const url =
@@ -374,6 +393,7 @@ export default async function handler(req, res) {
     refType,
     refId,
     templateVariables,
+    allowDuplicate,
   } = req.body || {};
 
   if (!notificationType || !VALID_NOTIFICATION_TYPES.has(notificationType)) {
@@ -400,6 +420,69 @@ export default async function handler(req, res) {
     }));
   }
 
+  // ── 멱등성 가드: 발송 전에 pending 로그를 idempotency_key로 선점 ──
+  // 같은 이벤트의 두 번째 시도(더블클릭·일괄 재실행·동시 요청)는 unique 충돌로 걸러진다.
+  const toDigits = String(recipientPhone).replace(/\D/g, "");
+  const idempotencyKey = buildIdempotencyKey({
+    notificationType,
+    refType,
+    refId,
+    toDigits,
+    allowDuplicate: allowDuplicate === true,
+  });
+
+  const logRow = {
+    recipient_user_id: recipientUserId || null,
+    recipient_phone: recipientPhone,
+    recipient_name: recipientName || null,
+    notification_type: notificationType,
+    ref_type: refType || null,
+    ref_id: refId || null,
+    template_code: templateCode,
+    template_variables: templateVariables || {},
+    message_body: messageBody,
+  };
+
+  let pendingRowId = null;
+
+  const { data: pendingRow, error: pendingInsertError } = await supabase
+    .from("notification_logs")
+    .insert({ ...logRow, status: "pending", idempotency_key: idempotencyKey })
+    .select("id")
+    .single();
+
+  if (!pendingInsertError) {
+    pendingRowId = pendingRow?.id ?? null;
+  } else if (pendingInsertError.code === "23505" && idempotencyKey) {
+    // 동일 이벤트가 이미 발송됐거나 진행 중.
+    // 단, 오래된 pending(선점 후 함수가 죽은 잔재)은 회수해서 발송을 이어간다.
+    const { data: existing } = await supabase
+      .from("notification_logs")
+      .select("id, status, created_at")
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+
+    const isStalePending =
+      existing?.status === "pending" &&
+      existing?.created_at &&
+      Date.now() - new Date(existing.created_at).getTime() > STALE_PENDING_RECLAIM_MS;
+
+    if (isStalePending) {
+      pendingRowId = existing.id;
+    } else {
+      return res.status(200).json({
+        success: true,
+        deduped: true,
+        existingStatus: existing?.status ?? "sent",
+        notificationType,
+        messageBody,
+      });
+    }
+  } else {
+    // 로그 선점 실패(일시 오류 등)는 발송을 막지 않는다 — 발송 후 legacy 방식으로 기록 시도
+    console.error("Failed to reserve notification log:", pendingInsertError);
+  }
+
   // 알림톡 발송 (솔라피 — notificationType으로 templateId 매핑)
   const kakaoResult = await sendKakaoAlimtalk({
     recipientPhone,
@@ -409,24 +492,34 @@ export default async function handler(req, res) {
 
   const logStatus = kakaoResult.success ? "sent" : "failed";
 
-  // 발송 로그 저장
-  const { error: logError } = await supabase
-    .from("notification_logs")
-    .insert({
-      recipient_user_id: recipientUserId || null,
-      recipient_phone: recipientPhone,
-      recipient_name: recipientName || null,
-      notification_type: notificationType,
-      ref_type: refType || null,
-      ref_id: refId || null,
-      template_code: templateCode,
-      template_variables: templateVariables || {},
-      message_body: messageBody,
-      status: logStatus,
-      vendor_message_id: kakaoResult.messageId || null,
-      error_message: kakaoResult.error || null,
-      sent_at: kakaoResult.success ? new Date().toISOString() : null,
-    });
+  // 발송 결과 기록. 실패 시 idempotency_key를 반납해 같은 이벤트의 재시도를 허용한다.
+  let logError = null;
+
+  if (pendingRowId) {
+    const { error: updateError } = await supabase
+      .from("notification_logs")
+      .update({
+        status: logStatus,
+        vendor_message_id: kakaoResult.messageId || null,
+        error_message: kakaoResult.error || null,
+        sent_at: kakaoResult.success ? new Date().toISOString() : null,
+        ...(kakaoResult.success ? {} : { idempotency_key: null }),
+      })
+      .eq("id", pendingRowId);
+    logError = updateError;
+  } else {
+    const { error: insertError } = await supabase
+      .from("notification_logs")
+      .insert({
+        ...logRow,
+        status: logStatus,
+        vendor_message_id: kakaoResult.messageId || null,
+        error_message: kakaoResult.error || null,
+        sent_at: kakaoResult.success ? new Date().toISOString() : null,
+        idempotency_key: null,
+      });
+    logError = insertError;
+  }
 
   if (logError) {
     console.error("Failed to save notification log:", logError);

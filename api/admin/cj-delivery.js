@@ -603,8 +603,18 @@ async function registerCjDelivery(order, { token, cfg }) {
     };
   }
 
-  // 1) 주소정제 → 라벨 라우팅 데이터(분류코드/주소약칭/배송점소). 실패해도 접수는 진행.
+  // 1) 주소정제 → 라벨 라우팅 데이터(분류코드/주소약칭/배송점소).
+  // 자체출력 운송장은 분류코드 바코드가 필수라, 주소정제 실패(미존재 주소 등) 시
+  // 채번 전에 접수를 차단한다. (CJ 개발환경 검증에서 미존재 주소 2건이 걸러진 건 —
+  // 운영 주소는 카카오 우편번호 검색 기반이지만 이중 안전장치. 2026-07-09)
   const addr = await reqAddrRefine(cfg, token, buildFullAddress(order));
+  if (!addr?.clsfCd) {
+    const error = new Error(
+      "CJ 주소정제에 실패했습니다. 배송지 주소가 실제 존재하는 주소인지 확인해 주세요. (분류코드 없이는 운송장 출력 불가)",
+    );
+    error.code = "CJ_ADDR_REFINE_FAILED";
+    throw error;
+  }
 
   // 2) 채번 → 운송장번호 확보
   const invcNo = await reqInvcNo(cfg, token);

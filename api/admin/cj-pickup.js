@@ -229,11 +229,11 @@ function getCjConfig() {
       "연세대학교 212동 경영관 209호 이글루",
 
     // ── 코드성 필드 (RegBook) ──────────────────────────────────────────────
-    // CJ 규격서 샘플 기준 기본값. 한글 코드표가 PDF 폰트 문제로 추출되지 않아,
-    // 정확한 집화/운임 코드는 계약·테스트 시 CJ 확인 후 env로 조정한다.
-    //   RCPT_DV 접수구분(02=방문집화 추정), FRT_DV_CD 운임구분(03=신용/계약),
+    // CJ 규격서(V3.9.4) 기준 기본값. 필요 시 env로 조정한다.
+    //   RCPT_DV 접수구분(01 일반 / 02 반품 — 수거는 02, 규격서 p.600행 확정),
+    //   FRT_DV_CD 운임구분(01 선불 / 02 착불 / 03 신용 — 계약 후불정산),
     //   CAL_DV_CD 정산구분, CNTR_ITEM_CD 품목, BOX_TYPE_CD 박스규격,
-    //   PRT_ST 출력상태, COD_YN 착불여부, DLV_DV 배송구분, WORK_DV_CD 작업구분.
+    //   PRT_ST 출력상태, COD_YN 착불여부, DLV_DV 택배구분(01 고정), WORK_DV_CD 작업구분.
     rcptDv: process.env.CJ_RCPT_DV || "02",
     workDvCd: process.env.CJ_WORK_DV_CD || "01",
     reqDvCd: process.env.CJ_REQ_DV_CD || "01",
@@ -241,7 +241,10 @@ function getCjConfig() {
     frtDvCd: process.env.CJ_FRT_DV_CD || "03",
     cntrItemCd: process.env.CJ_CNTR_ITEM_CD || "01",
     boxTypeCd: process.env.CJ_BOX_TYPE_CD || "02",
-    prtSt: process.env.CJ_PRT_ST || "02",
+    // 규격서: "반품(RCPT_DV='02') 진행 시 PRT_ST='01'(미출력) 기재" — 기사가 운송장
+    // 출력·부착하는 회수 모델. (선출력 '02'는 배송(일반 접수)용 — cj-delivery 참조.)
+    // env 이름도 CJ_PICKUP_PRT_ST로 분리 — cj-delivery의 CJ_PRT_ST와 상호 간섭 방지.
+    prtSt: process.env.CJ_PICKUP_PRT_ST || "01",
     codYn: process.env.CJ_COD_YN || "N",
     dlvDv: process.env.CJ_DLV_DV || "01",
   };

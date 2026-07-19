@@ -410,6 +410,18 @@ export default async function handler(req, res) {
     }));
   }
 
+  // 입고 완료(arrived)는 권수가 0이면 "교재 0권이 도착했습니다"로 나가 셀러가 당황한다 —
+  // UI에서도 막지만 재발송(로그 뷰어) 등 다른 경로를 위해 서버에서도 차단.
+  if (notificationType === "arrived") {
+    const arrivedCount = Number(templateVariables?.itemCount);
+    if (!Number.isFinite(arrivedCount) || arrivedCount <= 0) {
+      return res.status(400).json(makeErrorResponse({
+        error: "등록된 교재가 0권이라 입고 알림톡을 발송하지 않습니다. 책 등록 후 다시 시도하세요.",
+        code: "ARRIVED_ITEM_COUNT_ZERO",
+      }));
+    }
+  }
+
   const templateCode = TEMPLATE_CODES[notificationType];
   const messageBody = buildMessageBody(notificationType, templateVariables || {});
 

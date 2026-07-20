@@ -46,6 +46,11 @@ const env = {
   ...loadEnv(resolve(__dirname, "../../.env.local")),
 };
 
+// GitHub Actions 등 파일 없는 환경에서는 process.env로 폴백 (로컬은 파일 우선)
+for (const key of ["VITE_SUPABASE_URL", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY", "GEMINI_API_KEY"]) {
+  if (!env[key] && process.env[key]) env[key] = process.env[key];
+}
+
 const SUPABASE_URL = env.VITE_SUPABASE_URL || (env.SUPABASE_PROJECT_REF ? `https://${env.SUPABASE_PROJECT_REF}.supabase.co` : null);
 const SERVICE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 const GEMINI_KEY = env.GEMINI_API_KEY;

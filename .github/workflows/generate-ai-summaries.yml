@@ -1,0 +1,54 @@
+# 상품 AI 요약 배치 생성 — 노트북 없이 GitHub 러너에서 실행.
+# 트리거: 수동(workflow_dispatch)만. 스크립트가 미생성분(ai_summary is null)만 골라
+# 처리하므로 중단돼도 재실행하면 이어서 진행된다.
+name: Generate AI Summaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: "특정 상품 ID만 (쉼표 구분, 비우면 미생성 전체)"
+        required: false
+        default: ""
+      limit:
+        description: "최대 처리 개수 (비우면 전체)"
+        required: false
+        default: ""
+      force:
+        description: "이미 생성된 요약도 재생성 (--ids와 함께 사용 권장)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# 동시 실행 방지 — 두 배치가 같은 미생성 목록을 중복 처리하는 것 차단
+concurrency:
+  group: generate-ai-summaries
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      VITE_SUPABASE_URL: https://affeayqergefwudytfop.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 스크립트는 의존성 제로(fetch + node 내장만) — npm install 불필요
+      - name: Run batch
+        shell: bash
+        run: |
+          ARGS=()
+          if [ -n "${{ inputs.ids }}" ]; then ARGS+=(--ids "${{ inputs.ids }}"); fi
+          if [ -n "${{ inputs.limit }}" ]; then ARGS+=(--limit "${{ inputs.limit }}"); fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS+=(--force); fi
+          node scripts/generate-ai-summaries.mjs "${ARGS[@]}"

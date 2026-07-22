@@ -1,5 +1,10 @@
-import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
+
+// ⚠️ @google/genai SDK를 쓰지 말 것 (2026-07-23 확인):
+// Vercel의 ESM→CJS 함수 컴파일이 이 패키지만 번들에 인라인하지 못해, 배포 후
+// "Cannot find module '@google/genai/dist/node/index.cjs'"로 함수가 부팅조차 못 했다
+// (7/20 출시 이후 변환 성공 0건의 1차 원인 — 런타임 로그로 확정). Gemini는 아래처럼
+// REST(fetch)로 직접 호출한다. 요청/응답 스키마는 SDK와 동일 (camelCase).
 
 // ⚠️ MODEL_ID는 Google AI Studio에서 실제 사용 가능한 모델로 설정.
 // 환경변수로 외부에서 override 가능 — production에서 invalid model 사고 방지용.
@@ -67,23 +72,6 @@ function makeTimeoutError(timeoutMs) {
   return error;
 }
 
-async function withTimeout(promise, timeoutMs) {
-  let timeoutId = null;
-
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(makeTimeoutError(timeoutMs));
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-}
 
 function getSupabaseConfig() {
   const url =
@@ -154,21 +142,54 @@ function getImageOutput(response) {
   return null;
 }
 
-async function requestGeminiImage({ ai, imageBase64, mimeType, imageSize }) {
-  return ai.models.generateContent({
-    model: MODEL_ID,
-    contents: [
-      { text: SYSTEM_PROMPT },
-      { inlineData: { data: imageBase64, mimeType } },
-    ],
-    config: {
-      responseModalities: ["IMAGE"],
-      imageConfig: {
-        aspectRatio: "1:1",
-        imageSize,
+// Gemini generateContent REST 직접 호출 — AbortController로 실제 요청까지 취소.
+// (2026-07-23 로컬 검증: 동일 페이로드로 2K 이미지 17초 생성 성공)
+async function requestGeminiImage({ apiKey, imageBase64, mimeType, imageSize, timeoutMs }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: SYSTEM_PROMPT },
+                { inlineData: { data: imageBase64, mimeType } },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseModalities: ["IMAGE"],
+            imageConfig: {
+              aspectRatio: "1:1",
+              imageSize,
+            },
+          },
+        }),
+        signal: controller.signal,
       },
-    },
-  });
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw makeTimeoutError(timeoutMs);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || `Gemini HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
 }
 
 function isRetryableGeminiError(error) {
@@ -181,7 +202,7 @@ function isRetryableGeminiError(error) {
   );
 }
 
-async function generateStudioImageWithFallback({ ai, imageBase64, mimeType }) {
+async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }) {
   const attempts = [
     {
       label: "primary",
@@ -199,15 +220,13 @@ async function generateStudioImageWithFallback({ ai, imageBase64, mimeType }) {
 
   for (const attempt of attempts) {
     try {
-      return await withTimeout(
-        requestGeminiImage({
-          ai,
-          imageBase64,
-          mimeType,
-          imageSize: attempt.imageSize,
-        }),
-        attempt.timeoutMs,
-      );
+      return await requestGeminiImage({
+        apiKey,
+        imageBase64,
+        mimeType,
+        imageSize: attempt.imageSize,
+        timeoutMs: attempt.timeoutMs,
+      });
     } catch (error) {
       lastError = error;
       console.error("[book-studio] Gemini generation attempt failed", {
@@ -316,9 +335,8 @@ export default async function handler(req, res) {
       );
     }
 
-    const ai = new GoogleGenAI({ apiKey: geminiApiKey });
     const response = await generateStudioImageWithFallback({
-      ai,
+      apiKey: geminiApiKey,
       imageBase64,
       mimeType,
     });

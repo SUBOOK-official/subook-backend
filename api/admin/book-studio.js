@@ -3,11 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 
 // ⚠️ MODEL_ID는 Google AI Studio에서 실제 사용 가능한 모델로 설정.
 // 환경변수로 외부에서 override 가능 — production에서 invalid model 사고 방지용.
-// 검증된 후보(2026년 기준):
-//   gemini-2.5-flash-image-preview  (image generation, preview)
-//   gemini-2.0-flash-exp            (multimodal but image gen 미보장)
-// Google AI Studio 콘솔에서 정확한 모델 ID 확인 후 GEMINI_MODEL_ID env 등록 권장.
-const MODEL_ID = process.env.GEMINI_MODEL_ID || "gemini-3.1-flash-image-preview";
+// 기본값은 GA 모델 gemini-3.1-flash-image (2026-07-23 ListModels·실생성 검증,
+// preview 모델은 예고 없이 폐기될 수 있어 GA 사용). imageSize 1K/2K/4K 지원.
+const MODEL_ID = process.env.GEMINI_MODEL_ID || "gemini-3.1-flash-image";
 const GEMINI_PRIMARY_IMAGE_SIZE = "2K";
 const GEMINI_FALLBACK_IMAGE_SIZE = "1K";
 const GEMINI_PRIMARY_TIMEOUT_MS = 150_000;

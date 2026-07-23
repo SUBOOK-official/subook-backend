@@ -13,7 +13,8 @@ import { createClient } from "@supabase/supabase-js";
 // ──────────────────────────────────────────────────────────────────────────
 
 const CJ_REQUEST_TIMEOUT_MS = Number(process.env.CJ_REQUEST_TIMEOUT_MS) || 12_000;
-const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 2;
+// CJ 운영 서버 콜드 워밍업에서 첫 연결이 자주 끊겨(fetch failed) 여러 번 필요 → 기본 5회.
+const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 5;
 const MAX_BULK_PICKUP_COUNT = 30;
 const CJ_CARRIER_NAME = "CJ대한통운";
 
@@ -311,7 +312,11 @@ async function requestJsonWithRetry(url, options) {
       lastError = normalizedError;
 
       const isTimeout = normalizedError?.code === "CJ_TIMEOUT" || normalizedError?.name === "AbortError";
-      if (attempt < CJ_RETRY_COUNT && isTimeout) {
+      // "fetch failed"(연결 실패/리셋 등) — CJ 운영 콜드 워밍업에서 흔한 케이스. 재시도로 관통.
+      const errText = String(normalizedError?.message || normalizedError?.code || "");
+      const isNetwork = /fetch failed|ECONN|EAI_AGAIN|socket|network|reset|und_err|terminated|other side closed/i.test(errText);
+      if (attempt < CJ_RETRY_COUNT && (isTimeout || isNetwork)) {
+        await new Promise((r) => setTimeout(r, 600)); // 짧은 백오프로 연결 warm 유도
         continue;
       }
 

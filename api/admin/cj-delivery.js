@@ -683,7 +683,18 @@ function makeFailedResult(orderId, error) {
   };
 }
 
-async function processDeliveryRegistration({ supabase, orderId, force, token, cfg }) {
+// 발송인(수북 입고센터) 라벨 데이터 — 등록/재출력 공통.
+function buildSenderForLabel(cfg) {
+  return {
+    name: cfg.warehouseName,
+    phone: cfg.warehousePhone,
+    zip: cfg.warehousePostalCode,
+    addr1: cfg.warehouseAddressLine1,
+    addr2: cfg.warehouseAddressLine2,
+  };
+}
+
+async function processDeliveryRegistration({ supabase, orderId, force, reprint, token, cfg }) {
   const order = await getOrder(supabase, orderId);
   if (!order) {
     return {
@@ -692,6 +703,45 @@ async function processDeliveryRegistration({ supabase, orderId, force, token, cf
       status: "failed",
       error: "주문을 찾을 수 없습니다.",
       code: "ORDER_NOT_FOUND",
+    };
+  }
+
+  // ── 재출력: 이미 발급된 운송장 라벨 재조회. 채번·예약접수 없음(중복 접수 방지). ──
+  if (reprint) {
+    if (!order.tracking_number) {
+      return {
+        orderId,
+        orderNumber: order.order_number,
+        success: false,
+        status: "failed",
+        error: "운송장번호가 없어 재출력할 수 없습니다. 먼저 'CJ 송장 출력'으로 발급해 주세요.",
+        code: "NO_TRACKING_NUMBER",
+      };
+    }
+    // 라벨 라우팅 데이터(분류코드/주소약칭/배달점소)는 저장돼 있지 않아 주소정제로 재조회.
+    // 실패해도(주소정제 불가) 운송장번호·주소 기반으로 라벨은 뜬다 → non-fatal.
+    let addr = null;
+    if (isMockMode()) {
+      addr = {
+        clsfCd: "2T01", subClsfCd: "1h", clsfAddr: "샘플주소약칭",
+        clldlvBranNm: "서울강남서", clldlvEmpNickNm: "H03-6구역", rspsDiv: "01", p2pCd: null,
+      };
+    } else {
+      try {
+        addr = await reqAddrRefine(cfg, token, buildFullAddress(order));
+      } catch {
+        addr = null;
+      }
+    }
+    return {
+      orderId,
+      orderNumber: order.order_number,
+      success: true,
+      status: "reprint",
+      trackingNumber: order.tracking_number,
+      addr,
+      sender: buildSenderForLabel(cfg),
+      order,
     };
   }
 
@@ -746,13 +796,7 @@ async function processDeliveryRegistration({ supabase, orderId, force, token, cf
       cjRequestId: cjResult.cjRequestId,
       // 라벨 렌더용 데이터 — 라우팅(주소정제) + 발송인(수북). 수취인은 order에 있음.
       addr: cjResult.addr,
-      sender: {
-        name: cfg.warehouseName,
-        phone: cfg.warehousePhone,
-        zip: cfg.warehousePostalCode,
-        addr1: cfg.warehouseAddressLine1,
-        addr2: cfg.warehouseAddressLine2,
-      },
+      sender: buildSenderForLabel(cfg),
       order: updatedOrder,
     };
   } catch (error) {
@@ -841,6 +885,7 @@ export default async function handler(req, res) {
           supabase,
           orderId,
           force: Boolean(body.force),
+          reprint: Boolean(body.reprint),
           token,
           cfg,
         }),

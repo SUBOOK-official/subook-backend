@@ -219,7 +219,13 @@ async function fetchLatestCargoStatus(cfg, token, waybillNo) {
   }, token);
 
   if (!isCjSuccess(body)) {
-    const error = new Error(getCjMessage(body) || "CJ 배송 추적 조회에 실패했습니다.");
+    const message = getCjMessage(body);
+    // 채번 직후 ~ 집화 스캔 전에는 추적 데이터가 원래 없다 (2026-07-24 실측:
+    // 공개 조회 페이지도 동일하게 빈 결과). 에러가 아니라 "아직 없음"으로 취급 → 다음 크론 재확인.
+    if (/no data/i.test(message)) {
+      return { statusCode: null, statusText: "추적 데이터 없음(집화 스캔 전)", noData: true };
+    }
+    const error = new Error(message || "CJ 배송 추적 조회에 실패했습니다.");
     error.code = "CJ_TRACKING_FAILED";
     throw error;
   }

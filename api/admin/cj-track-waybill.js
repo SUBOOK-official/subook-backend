@@ -190,11 +190,12 @@ async function getOneDayToken(cfg) {
   return token;
 }
 
-// 'YYYYMMDD' + 'HHMMSS' → 'YYYY-MM-DD HH:mm' (표시용)
+// 스캔 시각 표시용 포맷. ⚠ 규격서 타입은 VARCHAR(8)/(6)이지만 실제 응답 예시는
+// "2020-12-31"/"10:34:02"처럼 구분자 포함(2026-07-28 실측 동일) — 숫자만 추출해 양쪽 다 처리.
 function formatScanTime(ymd, hour) {
-  const d = String(ymd || "").trim();
-  const t = String(hour || "").trim().padEnd(6, "0");
-  if (d.length !== 8) return "";
+  const d = String(ymd || "").trim().replace(/\D/g, "");
+  const t = String(hour || "").trim().replace(/\D/g, "");
+  if (d.length !== 8) return String(ymd || "").trim();
   const datePart = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
   if (t.length < 4) return datePart;
   return `${datePart} ${t.slice(0, 2)}:${t.slice(2, 4)}`;
@@ -271,17 +272,23 @@ export default async function handler(req, res) {
 
     const events = rawArray
       .filter((e) => e && typeof e === "object")
-      .map((e) => ({
-        // 문자열 정렬 키 (YYYYMMDDHHMMSS)
-        sortKey: `${String(e.SCAN_YMD || "").trim()}${String(e.SCAN_HOUR || "").trim().padEnd(6, "0")}`,
-        at: formatScanTime(e.SCAN_YMD, e.SCAN_HOUR),
-        statusCode: e.CRG_ST != null ? String(e.CRG_ST).trim() : null,
-        statusText: String(e.CRG_ST_NM || "").trim() || null,
-        branchName: String(e.DEALT_BRAN_NM || "").trim() || null,
-        branchTel: String(e.DEALT_BRAN_TEL || "").trim() || null,
-        workerName: String(e.DEALT_EMP_NM || "").trim() || null,
-        workerTel: String(e.DEALT_EMP_TEL || "").trim() || null,
-      }))
+      .map((e) => {
+        // DEALT_BRAN_TEL은 "점소명(010-1234-5678)" 형태로 병합돼 오는 경우가 있어(실측)
+        // 전화번호만 추출한다. 없으면 null.
+        const branchTelRaw = String(e.DEALT_BRAN_TEL || "").trim();
+        const branchTelMatch = branchTelRaw.match(/(\d{2,4}-\d{3,4}-\d{4})/);
+        return {
+          // 정렬 키 — 숫자만 이어붙여 YYYYMMDDHHMMSS (형식 편차 무관)
+          sortKey: `${String(e.SCAN_YMD || "").replace(/\D/g, "")}${String(e.SCAN_HOUR || "").replace(/\D/g, "").padEnd(6, "0")}`,
+          at: formatScanTime(e.SCAN_YMD, e.SCAN_HOUR),
+          statusCode: e.CRG_ST != null ? String(e.CRG_ST).trim() : null,
+          statusText: String(e.CRG_ST_NM || "").trim() || null,
+          branchName: String(e.DEALT_BRAN_NM || "").trim() || null,
+          branchTel: branchTelMatch ? branchTelMatch[1] : null,
+          workerName: String(e.DEALT_EMP_NM || "").trim() || null,
+          workerTel: String(e.DEALT_EMP_TEL || "").trim() || null,
+        };
+      })
       .sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0))
       .map(({ sortKey, ...rest }) => rest);
 

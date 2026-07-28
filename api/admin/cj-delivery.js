@@ -234,7 +234,9 @@ function getCjConfig() {
     calDvCd: process.env.CJ_CAL_DV_CD || "1",
     frtDvCd: process.env.CJ_FRT_DV_CD || "03",
     cntrItemCd: process.env.CJ_CNTR_ITEM_CD || "01",
-    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "02",
+    // BOX_TYPE_CD: 01=극소(3,000원)·02=소(3,500원)·03=중·04=대1·05=이형.
+    // 중고 교재는 극소(80cm/2kg 이하) 기본. (과거 '02=소'로 잘못 접수돼 500원 과청구 → 01로 수정)
+    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "01",
     prtSt: process.env.CJ_PRT_ST || "02",
     codYn: process.env.CJ_COD_YN || "N",
     dlvDv: process.env.CJ_DLV_DV || "01",

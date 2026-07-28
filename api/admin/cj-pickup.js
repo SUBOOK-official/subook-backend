@@ -241,7 +241,9 @@ function getCjConfig() {
     calDvCd: process.env.CJ_CAL_DV_CD || "1",
     frtDvCd: process.env.CJ_FRT_DV_CD || "03",
     cntrItemCd: process.env.CJ_CNTR_ITEM_CD || "01",
-    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "02",
+    // BOX_TYPE_CD: 01=극소(3,000원)·02=소(3,500원)·03=중·04=대1·05=이형.
+    // 중고 교재는 극소(80cm/2kg 이하) 기본. (과거 '02=소'로 잘못 접수돼 500원 과청구 → 01로 수정)
+    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "01",
     // 규격서: "반품(RCPT_DV='02') 진행 시 PRT_ST='01'(미출력) 기재" — 기사가 운송장
     // 출력·부착하는 회수 모델. (선출력 '02'는 배송(일반 접수)용 — cj-delivery 참조.)
     // env 이름도 CJ_PICKUP_PRT_ST로 분리 — cj-delivery의 CJ_PRT_ST와 상호 간섭 방지.

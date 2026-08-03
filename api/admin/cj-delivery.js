@@ -4,6 +4,8 @@ import { createClient } from "@supabase/supabase-js";
 // CJ대한통운 Open API (택배 표준 API) — 배송(발송) 예약 접수 + 자체 운송장 발급
 //
 // 흐름: ReqOneDayToken(1Day 토큰) → ReqInvcNo(채번=운송장번호) → RegBook(예약접수)
+//   RegBook이 ORA-00001(중복 접수)로 거부되면: CnclBook(유령 예약 취소, 오늘~D-2) →
+//   재채번 → 재접수, 그래도 중복이면 CUST_USE_NO/MPCK_KEY 접미사 우회 (자동 복구)
 // 인증: 헤더 CJ-Gateway-APIKey = 1Day 토큰 (규격서 V3.9.4 p6/p9). 바디 DATA.TOKEN_NUM 동일 값.
 // 환경: 테스트 https://dxapi-dev.cjlogistics.com:5054 / 운영 https://dxapi.cjlogistics.com:5052
 //
@@ -23,6 +25,7 @@ const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
 const DEFAULT_INVCNO_ENDPOINT = "/ReqInvcNo";
 const DEFAULT_REGBOOK_ENDPOINT = "/RegBook";
 const DEFAULT_ADDR_ENDPOINT = "/ReqAddrRfnSm";
+const DEFAULT_CNCLBOOK_ENDPOINT = "/CnclBook";
 
 const ORDER_SELECT = `
   id,
@@ -198,6 +201,7 @@ function getCjConfig() {
     invcNoEndpoint: process.env.CJ_INVCNO_ENDPOINT || DEFAULT_INVCNO_ENDPOINT,
     regBookEndpoint: process.env.CJ_REGBOOK_ENDPOINT || DEFAULT_REGBOOK_ENDPOINT,
     addrEndpoint: process.env.CJ_ADDR_ENDPOINT || DEFAULT_ADDR_ENDPOINT,
+    cnclBookEndpoint: process.env.CJ_CNCLBOOK_ENDPOINT || DEFAULT_CNCLBOOK_ENDPOINT,
 
     // 고객사코드(CUST_ID/CLNTNUM) + 사업자등록번호(토큰 발급에 필요) — 계약 후 발급
     custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
@@ -590,6 +594,52 @@ function buildRegBookPayload(order, { token, invcNo, cfg }) {
   };
 }
 
+// CJ Oracle unique 제약 위반(= 같은 접수 키로 이미 예약이 존재) 감지.
+// 접수 PK = 고객ID+접수일자+고객사용번호(+합포장키) — 우리는 둘 다 주문번호를 넣는다.
+function isCjDuplicateBooking(body) {
+  return /ORA-00001|unique constraint/i.test(getCjMessage(body));
+}
+
+// KST HHmmss — 재접수 우회 키 접미사용 (분 단위 충돌 방지 위해 초까지).
+function kstHHmmss(date = new Date()) {
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return kst.toISOString().slice(11, 19).replace(/:/g, "");
+}
+
+// 예약취소(CnclBook) 바디 — 접수 바디와 동일 구조에 REQ_DV_CD=02(취소), 대상 접수일자 지정.
+// 유령 예약의 운송장번호는 알 수 없으므로 INVC_NO는 생략(PK 아님).
+function buildCancelPayload(order, { token, cfg, rcptYmd }) {
+  const payload = {
+    ...buildRegBookPayload(order, { token, invcNo: "", cfg }),
+    RCPT_YMD: rcptYmd,
+    REQ_DV_CD: "02",
+  };
+  delete payload.INVC_NO;
+  return payload;
+}
+
+// 유령 예약(응답 유실로 우리 DB에 기록되지 못한 CJ 접수) 취소.
+// 접수일자를 모르므로 오늘~D-2를 순차 시도한다. 대상 없는 날짜는 CJ가 E로 응답 — 무해.
+// 실패해도 던지지 않고 결과만 수집한다(이후 재접수 시도가 최종 판정).
+async function cancelStrayBookings(order, { token, cfg }) {
+  const results = [];
+  for (let daysAgo = 0; daysAgo <= 2; daysAgo += 1) {
+    const rcptYmd = kstYmd(new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000));
+    try {
+      const body = await postCj(
+        cfg,
+        cfg.cnclBookEndpoint,
+        buildCancelPayload(order, { token, cfg, rcptYmd }),
+        token,
+      );
+      results.push({ rcptYmd, ok: isCjSuccess(body), detail: getCjMessage(body).slice(0, 200) });
+    } catch (error) {
+      results.push({ rcptYmd, ok: false, detail: String(error?.message || "").slice(0, 200) });
+    }
+  }
+  return results;
+}
+
 function makeMockTrackingNumber(order) {
   const nowDigits = kstYmd().slice(2) + String(Date.now()).slice(-4);
   const idDigits = String(order.id || 0).padStart(6, "0").slice(-6);
@@ -624,21 +674,76 @@ async function registerCjDelivery(order, { token, cfg }) {
   }
 
   // 2) 채번 → 운송장번호 확보
-  const invcNo = await reqInvcNo(cfg, token);
+  let invcNo = await reqInvcNo(cfg, token);
 
   // 3) 예약접수 (헤더 키 = 토큰)
-  const payload = buildRegBookPayload(order, { token, invcNo, cfg });
-  const body = await postCj(cfg, cfg.regBookEndpoint, payload, token);
+  let body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(order, { token, invcNo, cfg }), token);
+  let healed = null;
+  let cjCustUseNo = order.order_number;
+
+  // ── ORA-00001(중복 접수) 자동 복구 ─────────────────────────────────────
+  // 과거 시도가 CJ에는 접수됐는데 응답이 유실되면(타임아웃/연결 끊김) 우리 DB에 운송장이
+  // 없는 채로 CJ에 유령 예약이 남아, 같은 주문번호 재접수가 전부 중복 거부된다.
+  // 1차: 유령 예약 취소(CnclBook) 후 새 운송장번호로 재접수.
+  if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
+    console.warn("[cj-delivery] duplicate booking — auto-heal start", {
+      orderNumber: order.order_number,
+      detail: getCjMessage(body).slice(0, 200),
+    });
+    const cancelResults = await cancelStrayBookings(order, { token, cfg });
+    console.warn("[cj-delivery] stray cancel results", {
+      orderNumber: order.order_number,
+      cancelResults,
+    });
+
+    // 취소된 유령 예약이 물고 있던 번호와 분리되도록 항상 새로 채번한다.
+    invcNo = await reqInvcNo(cfg, token);
+    body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(order, { token, invcNo, cfg }), token);
+    healed = "cancel-reregister";
+
+    // 2차(최후 수단): 취소 불가 상태(스캔/출력 처리 등)로 여전히 중복이면, 고객사 내부
+    // 관리번호인 CUST_USE_NO/MPCK_KEY에 접미사를 붙여 유니크 키를 우회한다.
+    // 배송은 운송장 바코드(INVC_NO) 기준이라 접미사가 실물 흐름에 영향 없음.
+    if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
+      cjCustUseNo = `${order.order_number}-R${kstHHmmss()}`;
+      invcNo = await reqInvcNo(cfg, token);
+      body = await postCj(
+        cfg,
+        cfg.regBookEndpoint,
+        {
+          ...buildRegBookPayload(order, { token, invcNo, cfg }),
+          CUST_USE_NO: cjCustUseNo,
+          MPCK_KEY: cjCustUseNo,
+        },
+        token,
+      );
+      healed = "suffix";
+    }
+  }
 
   if (!isCjSuccess(body)) {
-    throw makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+    const error = makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+    if (healed) {
+      error.message = `CJ에 같은 주문번호의 예약이 남아 있어 자동 취소·재접수까지 시도했지만 실패했습니다 (${getCjMessage(body)}). CJ에 해당 주문번호 예약취소를 요청한 뒤 다시 시도해 주세요.`;
+    }
+    throw error;
   }
+
+  // 성공 즉시 운송장번호를 로그로 남긴다 — 응답 유실·DB 기록 실패 시 복구 근거.
+  console.log("[cj-delivery] regbook ok", {
+    orderNumber: order.order_number,
+    invcNo,
+    healed,
+    cjCustUseNo,
+  });
 
   // RegBook 성공 응답은 INVC_NO를 돌려주지 않으므로 우리가 채번한 번호가 곧 운송장.
   return {
     trackingNumber: invcNo,
     cjRequestId: invcNo,
     addr,
+    healed,
+    cjCustUseNo,
     rawResponse: body,
   };
 }
@@ -801,6 +906,9 @@ async function processDeliveryRegistration({ supabase, orderId, force, reprint, 
       status: "registered",
       trackingNumber: cjResult.trackingNumber,
       cjRequestId: cjResult.cjRequestId,
+      // 자동 복구로 발급된 경우 표시(운영 로그·프론트 확장용) — null이면 정상 1회 접수.
+      healed: cjResult.healed || null,
+      cjCustUseNo: cjResult.cjCustUseNo || null,
       // 라벨 렌더용 데이터 — 라우팅(주소정제) + 발송인(수북). 수취인은 order에 있음.
       addr: cjResult.addr,
       sender: buildSenderForLabel(cfg),

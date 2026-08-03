@@ -4,6 +4,8 @@ import { createClient } from "@supabase/supabase-js";
 // CJ대한통운 Open API (택배 표준 API) — 수거(집화) 예약 접수
 //
 // 흐름: ReqOneDayToken(1Day 토큰) → ReqInvcNo(채번=운송장번호) → RegBook(예약접수)
+//   RegBook이 ORA-00001(중복 접수)로 거부되면: CnclBook(유령 예약 취소, 오늘~D-2) →
+//   재채번 → 재접수 (자동 복구). 접미사 우회는 이중 기사출동 위험으로 수거에는 없음.
 // 인증: 헤더 CJ-Gateway-APIKey + 바디 DATA.TOKEN_NUM + DATA.CUST_ID(고객사코드)
 // 환경: 테스트 https://dxapi-dev.cjlogistics.com:5054 / 운영 https://dxapi.cjlogistics.com:5052
 // 규격: 개발자포털 자료실 "CJLAPI-택배 표준 API Developer Guide" (V3.9.4) 기준
@@ -21,6 +23,7 @@ const CJ_CARRIER_NAME = "CJ대한통운";
 const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
 const DEFAULT_INVCNO_ENDPOINT = "/ReqInvcNo";
 const DEFAULT_REGBOOK_ENDPOINT = "/RegBook";
+const DEFAULT_CNCLBOOK_ENDPOINT = "/CnclBook";
 
 const PICKUP_SELECT = `
   id,
@@ -206,6 +209,7 @@ function getCjConfig() {
     tokenEndpoint: process.env.CJ_TOKEN_ENDPOINT || DEFAULT_TOKEN_ENDPOINT,
     invcNoEndpoint: process.env.CJ_INVCNO_ENDPOINT || DEFAULT_INVCNO_ENDPOINT,
     regBookEndpoint: process.env.CJ_REGBOOK_ENDPOINT || DEFAULT_REGBOOK_ENDPOINT,
+    cnclBookEndpoint: process.env.CJ_CNCLBOOK_ENDPOINT || DEFAULT_CNCLBOOK_ENDPOINT,
 
     // 고객사코드(CUST_ID/CLNTNUM) + 사업자등록번호(토큰 발급에 필요) — 계약 후 발급
     custId: process.env.CJ_CUST_ID || process.env.CJ_CUSTOMER_ID || "",
@@ -565,6 +569,46 @@ function buildRegBookPayload(pickupRequest, { token, invcNo, cfg }) {
   };
 }
 
+// CJ Oracle unique 제약 위반(= 같은 접수 키로 이미 예약이 존재) 감지.
+// 접수 PK = 고객ID+접수일자+CUST_USE_NO이고 우리는 CUST_USE_NO/MPCK_KEY에 요청번호를 넣는다.
+function isCjDuplicateBooking(body) {
+  return /ORA-00001|unique constraint/i.test(getCjMessage(body));
+}
+
+// 예약취소(CnclBook) 바디 — 접수 바디와 동일 구조에 REQ_DV_CD=02(취소), 대상 접수일자 지정.
+// 유령 예약의 운송장번호는 알 수 없으므로 INVC_NO는 생략(PK 아님). RCPT_DV=02(수거)는 그대로 매칭.
+function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd }) {
+  const payload = {
+    ...buildRegBookPayload(pickupRequest, { token, invcNo: "", cfg }),
+    RCPT_YMD: rcptYmd,
+    REQ_DV_CD: "02",
+  };
+  delete payload.INVC_NO;
+  return payload;
+}
+
+// 유령 예약(응답 유실로 우리 DB에 기록되지 못한 CJ 접수) 취소.
+// 접수일자를 모르므로 오늘~D-2를 순차 시도한다. 대상 없는 날짜는 CJ가 E로 응답 — 무해.
+// 실패해도 던지지 않고 결과만 수집한다(이후 재접수 시도가 최종 판정).
+async function cancelStrayBookings(pickupRequest, { token, cfg }) {
+  const results = [];
+  for (let daysAgo = 0; daysAgo <= 2; daysAgo += 1) {
+    const rcptYmd = kstYmd(new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000));
+    try {
+      const body = await postCj(
+        cfg,
+        cfg.cnclBookEndpoint,
+        buildCancelPayload(pickupRequest, { token, cfg, rcptYmd }),
+        token,
+      );
+      results.push({ rcptYmd, ok: isCjSuccess(body), detail: getCjMessage(body).slice(0, 200) });
+    } catch (error) {
+      results.push({ rcptYmd, ok: false, detail: String(error?.message || "").slice(0, 200) });
+    }
+  }
+  return results;
+}
+
 function makeMockTrackingNumber(pickupRequest) {
   const nowDigits = kstYmd().slice(2) + String(Date.now()).slice(-4);
   const idDigits = String(pickupRequest.id || 0).padStart(6, "0").slice(-6);
@@ -582,20 +626,55 @@ async function registerCjPickup(pickupRequest, { token, cfg }) {
   }
 
   // 1) 채번 → 운송장번호 확보
-  const invcNo = await reqInvcNo(cfg, token);
+  let invcNo = await reqInvcNo(cfg, token);
 
   // 2) 예약접수 (헤더 키 = 토큰)
-  const payload = buildRegBookPayload(pickupRequest, { token, invcNo, cfg });
-  const body = await postCj(cfg, cfg.regBookEndpoint, payload, token);
+  let body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg }), token);
+  let healed = null;
+
+  // ── ORA-00001(중복 접수) 자동 복구 ─────────────────────────────────────
+  // 과거 시도가 CJ에는 접수됐는데 응답이 유실되면(타임아웃/연결 끊김) 우리 DB에 운송장이
+  // 없는 채로 CJ에 유령 예약이 남아, 같은 요청번호 재접수가 전부 중복 거부된다.
+  // 유령 예약 취소(CnclBook) 후 새 운송장번호로 1회 재접수.
+  // ⚠ 배송(cj-delivery)과 달리 접미사 우회 최후수단은 두지 않는다 — 수거는 접수만으로
+  //   기사 출동이 잡히므로, 취소 불가(이미 스캔 등) 상태에서 우회 접수하면 이중 출동이 된다.
+  if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
+    console.warn("[cj-pickup] duplicate booking — auto-heal start", {
+      requestNumber: pickupRequest.request_number,
+      detail: getCjMessage(body).slice(0, 200),
+    });
+    const cancelResults = await cancelStrayBookings(pickupRequest, { token, cfg });
+    console.warn("[cj-pickup] stray cancel results", {
+      requestNumber: pickupRequest.request_number,
+      cancelResults,
+    });
+
+    // 취소된 유령 예약이 물고 있던 번호와 분리되도록 항상 새로 채번한다.
+    invcNo = await reqInvcNo(cfg, token);
+    body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg }), token);
+    healed = "cancel-reregister";
+  }
 
   if (!isCjSuccess(body)) {
-    throw makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+    const error = makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+    if (healed && isCjDuplicateBooking(body)) {
+      error.message = `CJ에 같은 요청번호의 수거 예약이 남아 있는데 취소가 불가한 상태입니다 (${getCjMessage(body)}). 기사 배정/스캔이 이미 진행됐을 수 있으니 이중 접수하지 말고, CJ 추적 조회 또는 지점 문의로 기존 접수 상태를 확인해 주세요.`;
+    }
+    throw error;
   }
+
+  // 성공 즉시 운송장번호를 로그로 남긴다 — 응답 유실·DB 기록 실패 시 복구 근거.
+  console.log("[cj-pickup] regbook ok", {
+    requestNumber: pickupRequest.request_number,
+    invcNo,
+    healed,
+  });
 
   // RegBook 성공 응답은 INVC_NO를 돌려주지 않으므로 우리가 채번한 번호가 곧 운송장.
   return {
     trackingNumber: invcNo,
     cjRequestId: invcNo,
+    healed,
     rawResponse: body,
   };
 }
@@ -723,6 +802,8 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
       status: "registered",
       trackingNumber: cjResult.trackingNumber,
       cjRequestId: cjResult.cjRequestId,
+      // 자동 복구(유령 예약 취소 후 재접수)로 발급된 경우 표시 — null이면 정상 1회 접수.
+      healed: cjResult.healed || null,
       pickupRequest: updatedPickupRequest,
     };
   } catch (error) {

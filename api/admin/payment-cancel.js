@@ -11,7 +11,12 @@ import { createClient } from "@supabase/supabase-js";
 //        ⚠ 부분취소는 동일 orderId 재호출이 거부되므로 취소 orderId를
 //          `${order_number}-R${환불누계}`로 만든다 — 같은 논리적 환불의 재시도는 같은 orderId가
 //          되어 나이스페이가 중복을 거부(=이중취소 방지), 다음 환불 건은 누계가 달라져 통과.
+//        ⚠ 취소 실패 시 거래조회(GET /v1/payments/{tid})로 '이미 전액취소된 결제'인지 확인 —
+//          나이스페이 콘솔에서 직접 취소한 주문(2026-08-04 ORD-2608-0077 사례)도 어드민에서
+//          DB 환불(재고 롤백)을 마저 진행할 수 있게 멱등 성공 처리한다. 단 이 경우 돈은 이미
+//          전액 돌아간 상태이므로 "남은 금액 전액 환불" 요청일 때만 허용(부분 기록 어긋남 방지).
 //      · 토스: POST /v1/payments/{paymentKey}/cancel, cancelAmount=금액 + 결정적 Idempotency-Key.
+//        이미 전액취소된 결제(ALREADY_CANCELED_PAYMENT)도 같은 전액-요청 게이트를 거쳐 멱등 성공.
 //   3) admin_refund_order_items(p_validate_only=false)로 DB 확정 (품목 스탬프·정산·재고·쿠폰·누계).
 //      이 단계 실패는 동시 조작 등 희귀 케이스 — PG 취소는 이미 성공했으므로 CRITICAL로 응답한다.
 //
@@ -124,6 +129,22 @@ async function cancelTossPayment({ paymentKey, reason, cancelAmount, idempotency
   }
 }
 
+// 나이스페이 거래 조회 — GET /v1/payments/{tid}. 취소 실패가 '이미 취소된 결제' 때문인지 판별용.
+// status: paid/ready/failed/cancelled(전액취소)/partialCancelled/expired, balanceAmt: 취소 가능 잔액.
+async function getNicepayPayment(tid) {
+  const { clientKey, secretKey, apiBase } = getNicepayConfig();
+  try {
+    const auth = "Basic " + Buffer.from(`${clientKey}:${secretKey}`).toString("base64");
+    const resp = await fetchWithTimeout(`${apiBase}/v1/payments/${encodeURIComponent(tid)}`, {
+      headers: { Authorization: auth },
+    });
+    const body = await resp.json().catch(() => null);
+    return body?.resultCode === "0000" ? body : null;
+  } catch {
+    return null;
+  }
+}
+
 // 나이스페이 결제 취소 — POST /v1/payments/{tid}/cancel (Basic clientKey:secretKey).
 // cancelAmt 없으면 전액취소. 부분취소는 취소 요청별 고유 orderId 필수(중복 거부).
 async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
@@ -149,6 +170,23 @@ async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
     });
     const respBody = await resp.json().catch(() => null);
     if (respBody?.resultCode === "0000") return { ok: true, body: respBody };
+    // 취소 실패 — 나이스페이 콘솔에서 이미 전액취소된 결제인지 거래조회로 판별.
+    // ('이미 취소됨' 전용 resultCode가 규격에 없어 상태 조회로 확인. 전액취소(cancelled·잔액 0)
+    //  확인 시 멱등 성공 — 돈은 이미 돌아갔으므로 DB만 맞추면 된다. 토스와 동일 정책)
+    const inquiry = await getNicepayPayment(tid);
+    if (inquiry?.status === "cancelled" && Number(inquiry?.balanceAmt ?? 0) === 0) {
+      return { ok: true, body: inquiry, alreadyCanceled: true };
+    }
+    if (inquiry?.status === "partialCancelled") {
+      return {
+        ok: false,
+        code: respBody?.resultCode || "NICEPAY_CANCEL_FAILED",
+        message:
+          `결제 취소에 실패했습니다: ${respBody?.resultMsg || "사유 미상"} — 나이스페이 조회 결과 ` +
+          `부분취소 상태(취소 가능 잔액 ${Number(inquiry.balanceAmt ?? 0).toLocaleString("ko-KR")}원)입니다. ` +
+          `나이스페이 가맹점 콘솔에서 취소 내역을 확인해주세요.`,
+      };
+    }
     return {
       ok: false,
       code: respBody?.resultCode || "NICEPAY_CANCEL_FAILED",
@@ -245,11 +283,30 @@ export default async function handler(req, res) {
 
     // 2) PG 주문이면 (부분)취소. 계좌이체(payment_key 없음)는 건너뜀.
     let pgCancelled = false;
+    let pgAlreadyCancelled = false;
     if (order.payment_key) {
       const cancelRes = await cancelPgPayment({ order, reason, amount, itemIds });
       if (!cancelRes.ok) {
         // PG 취소 실패 → DB는 건드리지 않고 종료 (구매자 불리 상태 방지)
         return res.status(502).json(makeErrorResponse({ error: cancelRes.message, code: cancelRes.code }));
+      }
+      // PG가 "이미 전액취소된 결제"라고 알려준 경우(나이스페이 콘솔 직접취소 등) —
+      // 돈은 이미 전부 돌아간 상태다. DB를 부분환불로 기록하면 실제 환불액과 어긋나므로
+      // "남은 금액 전액 환불" 요청일 때만 DB 확정으로 진행한다.
+      if (cancelRes.alreadyCanceled) {
+        const remaining = Number(validate.data?.remaining_refundable ?? 0);
+        const isFullRemaining = validate.data?.order_fully_refunded === true && amount === remaining;
+        if (!isFullRemaining) {
+          return res.status(409).json(
+            makeErrorResponse({
+              error:
+                "PG에서 이미 전액취소된 결제입니다. 부분 금액으로 기록하면 실제 환불된 금액과 어긋나므로, " +
+                "남은 품목을 모두 선택하고 금액을 기본값(남은 전액)으로 두고 환불 처리해주세요.",
+              code: "PG_ALREADY_CANCELLED_FULL_ONLY",
+            }),
+          );
+        }
+        pgAlreadyCancelled = true;
       }
       pgCancelled = true;
     }
@@ -275,7 +332,12 @@ export default async function handler(req, res) {
       );
     }
 
-    return res.status(200).json({ success: true, data: commit.data, pg_cancelled: pgCancelled });
+    return res.status(200).json({
+      success: true,
+      data: commit.data,
+      pg_cancelled: pgCancelled,
+      pg_already_cancelled: pgAlreadyCancelled,
+    });
   }
 
   // ── 레거시 흐름: 주문 전체 환불 (배포 전 구버전 어드민 탭 호환) ────────────────

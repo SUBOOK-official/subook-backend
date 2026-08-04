@@ -131,6 +131,7 @@ async function cancelTossPayment({ paymentKey, reason, cancelAmount, idempotency
 
 // 나이스페이 거래 조회 — GET /v1/payments/{tid}. 취소 실패가 '이미 취소된 결제' 때문인지 판별용.
 // status: paid/ready/failed/cancelled(전액취소)/partialCancelled/expired, balanceAmt: 취소 가능 잔액.
+// 파싱된 응답을 그대로 반환한다(resultCode 판정은 호출부) — 실패 진단 로그에 원본이 필요.
 async function getNicepayPayment(tid) {
   const { clientKey, secretKey, apiBase } = getNicepayConfig();
   try {
@@ -138,8 +139,7 @@ async function getNicepayPayment(tid) {
     const resp = await fetchWithTimeout(`${apiBase}/v1/payments/${encodeURIComponent(tid)}`, {
       headers: { Authorization: auth },
     });
-    const body = await resp.json().catch(() => null);
-    return body?.resultCode === "0000" ? body : null;
+    return await resp.json().catch(() => null);
   } catch {
     return null;
   }
@@ -174,10 +174,23 @@ async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
     // ('이미 취소됨' 전용 resultCode가 규격에 없어 상태 조회로 확인. 전액취소(cancelled·잔액 0)
     //  확인 시 멱등 성공 — 돈은 이미 돌아갔으므로 DB만 맞추면 된다. 토스와 동일 정책)
     const inquiry = await getNicepayPayment(tid);
-    if (inquiry?.status === "cancelled" && Number(inquiry?.balanceAmt ?? 0) === 0) {
+    const inquiryOk = inquiry?.resultCode === "0000";
+    if (inquiryOk && inquiry?.status === "cancelled" && Number(inquiry?.balanceAmt ?? 0) === 0) {
       return { ok: true, body: inquiry, alreadyCanceled: true };
     }
-    if (inquiry?.status === "partialCancelled") {
+    // 여기 도달 = 진짜 실패. 운영 진단용 로그 (취소 응답 + 거래조회 결과 원본)
+    console.error("[payment-cancel] nicepay cancel failed", {
+      tid,
+      cancelOrderId,
+      cancelAmt,
+      cancelHttp: resp.status,
+      cancelResultCode: respBody?.resultCode ?? null,
+      cancelResultMsg: respBody?.resultMsg ?? null,
+      inquiryResultCode: inquiry?.resultCode ?? null,
+      inquiryStatus: inquiry?.status ?? null,
+      inquiryBalanceAmt: inquiry?.balanceAmt ?? null,
+    });
+    if (inquiryOk && inquiry?.status === "partialCancelled") {
       return {
         ok: false,
         code: respBody?.resultCode || "NICEPAY_CANCEL_FAILED",
@@ -343,6 +356,10 @@ export default async function handler(req, res) {
   // ── 레거시 흐름: 주문 전체 환불 (배포 전 구버전 어드민 탭 호환) ────────────────
   // 나이스페이 주문은 구버전 화면에서 처리 불가 — 새 화면(품목 선택 모달)으로 유도.
   if (order.payment_key && (order.pg_provider || "toss") === "nicepay") {
+    // 구버전 어드민 탭(품목 선택 모달 이전)에서 나이스페이 주문 환불 시도 — 진단용 로그
+    console.error("[payment-cancel] legacy flow blocked for nicepay order", {
+      orderNumber: order.order_number,
+    });
     return res.status(400).json(
       makeErrorResponse({
         error: "나이스페이 주문은 새 환불 화면에서 처리해주세요. 관리자 화면을 새로고침하면 품목 선택 환불 모달이 열립니다.",

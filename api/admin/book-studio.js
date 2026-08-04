@@ -10,6 +10,15 @@ import { createClient } from "@supabase/supabase-js";
 // 환경변수로 외부에서 override 가능 — production에서 invalid model 사고 방지용.
 // 기본값은 GA 모델 gemini-3.1-flash-image (2026-07-23 ListModels·실생성 검증,
 // preview 모델은 예고 없이 폐기될 수 있어 GA 사용). imageSize 1K/2K/4K 지원.
+//
+// ── mode: "summary" (2026-08-03 추가) ────────────────────────────────
+// 이 함수는 표지 스튜디오 변환 외에 상품 AI 요약 단건 생성도 겸한다
+// (body.mode === "summary" 분기, 아래 handleSummaryMode).
+// 별도 파일로 두지 않는 이유: Vercel Hobby 플랜 서버리스 함수 12개 상한에
+// 이미 도달해 13번째 함수 추가 시 배포가 거부됨. 같은 Gemini 호출 계열이라 여기 통합.
+// 호출 경로: products INSERT DB 트리거 + pg_cron 스위퍼(pg_net, body.token 인증,
+// migration 20260804031500) / 수동 Bearer(CRON_SECRET·service key).
+// 대량 백필은 여전히 backend/scripts/generate-ai-summaries.mjs (GitHub Actions).
 const MODEL_ID = process.env.GEMINI_MODEL_ID || "gemini-3.1-flash-image";
 const GEMINI_PRIMARY_IMAGE_SIZE = "2K";
 const GEMINI_FALLBACK_IMAGE_SIZE = "1K";
@@ -247,6 +256,230 @@ async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }
   throw lastError || new Error("GEMINI_GENERATION_FAILED");
 }
 
+// ── 상품 AI 요약 단건 생성 (mode: "summary") ─────────────────────────
+// 생성 규칙은 backend/scripts/generate-ai-summaries.mjs의 검증된 로직 이식:
+// gemini-3.5-flash + 검색 그라운딩(camelCase googleSearch 필수 — snake_case는
+// 조용히 무시됨), thinking 파트 제외, maxOutputTokens 4096(2048은 잘림),
+// finishReason!=="STOP" 실패 처리, 출처 0이면 1회 재시도, option 미포함(분권 앵커링 방지).
+
+const SUMMARY_MODEL_ID = process.env.GEMINI_SUMMARY_MODEL_ID || "gemini-3.5-flash";
+const SUMMARY_ATTEMPT_TIMEOUT_MS = 45_000;
+
+function getSupabaseRestConfig() {
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.SUPABASE_ADMIN_URL ||
+    process.env.VITE_SUPABASE_ADMIN_URL ||
+    process.env.VITE_SUPABASE_URL;
+  const serviceKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+  return { url, serviceKey };
+}
+
+function buildSummaryPrompt(product) {
+  // ⚠ product.option(분권명)은 프롬프트에 넣지 않는다 (2026-07-13 피드백).
+  const facts = [
+    `- 제목: ${product.title}`,
+    `- 과목: ${product.subject ?? "미상"} / 유형: ${product.book_type ?? "미상"} / 출판연도: ${product.published_year ?? "미상"}`,
+    `- 브랜드/출판사: ${product.brand ?? "미상"} / 강사: ${product.instructor_name ?? "미상"}`,
+  ].join("\n");
+
+  return `당신은 수능 교재 중고거래 플랫폼 '수북'의 교재 소개 작성자입니다.
+먼저 반드시 구글 검색을 실행해 이 교재의 실제 정보(난이도, 구성 방향, 수험생들의 평가, 추천 대상)를 확인한 뒤, 이 교재를 처음 보는 수험생에게 도움이 되는 소개를 작성하세요. 검색 없이 기억만으로 쓰지 마세요.
+
+[교재 정보 — 우리 데이터베이스의 확정 사실]
+${facts}
+
+[작성 규칙]
+1. 이 상품은 같은 교재의 여러 분권·옵션(예: 수학1+수학2 / 미적분, 회차별)으로 판매될 수 있습니다. 특정 분권이 아니라 교재(시리즈) 전체를 일반화해서 소개하고, 분권명을 제목처럼 확정해 쓰지 마세요.
+2. 검색으로 확인된 내용만 쓰고, "~라는 평가가 많아요", "~로 알려져 있어요"처럼 근거가 검색임이 드러나게 쓰세요.
+3. 검색으로 확인되지 않는 구체적 사실(목차, 문항 수, 개정판 차이 등)은 절대 언급하지 마세요.
+4. 검색 결과가 부족한 교재라면 과장 없이, 이 유형의 교재를 수험생이 어떻게 활용하면 좋은지 일반적인 조언 위주로 쓰세요.
+5. 한국어 존댓말로 3~4문장, 문단 하나로만. 이모지·과장 광고 문구·목록·헤더 금지.
+6. 가독성을 위해 핵심 구절(난이도 특징, 추천 대상, 활용 포인트) 2~4곳만 **볼드**로 강조하세요. 볼드 외의 마크다운은 금지.
+7. 중고 매물의 상태나 가격은 언급하지 마세요 (페이지에 별도로 표시됩니다).
+8. 소개 본문만 출력하세요 (제목·인사말·부연 설명 금지).`;
+}
+
+async function requestGeminiSummary({ apiKey, product }) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SUMMARY_ATTEMPT_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${SUMMARY_MODEL_ID}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: buildSummaryPrompt(product) }] }],
+          // ⚠ camelCase 필수 — snake_case(google_search)는 조용히 무시됨 (실측)
+          tools: [{ googleSearch: {} }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+        }),
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw makeTimeoutError(SUMMARY_ATTEMPT_TIMEOUT_MS);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Gemini ${response.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+
+  const candidate = data?.candidates?.[0];
+  // 토큰 예산 소진(MAX_TOKENS) 등으로 잘린 응답은 불완전 — 실패 처리해 재시도 유도
+  if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+    throw new Error(`불완전 응답 (finishReason=${candidate.finishReason})`);
+  }
+  // thinking 모델은 사고 과정 파트(thought: true)를 함께 반환 — 최종 답변 파트만 사용
+  const text = (candidate?.content?.parts ?? [])
+    .filter((part) => !part.thought)
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+
+  const sources = [];
+  for (const chunk of candidate?.groundingMetadata?.groundingChunks ?? []) {
+    if (chunk?.web?.uri && !sources.some((s) => s.uri === chunk.web.uri)) {
+      sources.push({ uri: chunk.web.uri, title: chunk.web.title ?? "" });
+    }
+    if (sources.length >= 5) break;
+  }
+
+  return { text, sources };
+}
+
+async function generateSummaryWithRetries({ apiKey, product }) {
+  let result;
+  try {
+    result = await requestGeminiSummary({ apiKey, product });
+  } catch {
+    // 일시 오류/불완전 응답은 1회 재시도
+    await new Promise((r) => setTimeout(r, 2000));
+    result = await requestGeminiSummary({ apiKey, product });
+  }
+  // 검색이 실행되지 않은(출처 0) 응답은 1회 더 시도 — 그래도 0이면
+  // 유형 일반론 fallback 규칙이 있으므로 그 결과를 그대로 저장한다.
+  if (result.sources.length === 0) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const retry = await requestGeminiSummary({ apiKey, product }).catch(() => null);
+    if (retry && retry.sources.length > 0) {
+      result = retry;
+    }
+  }
+  return result;
+}
+
+async function handleSummaryMode(req, res, body) {
+  const { url: supabaseUrl, serviceKey } = getSupabaseRestConfig();
+  const geminiApiKey = getGeminiApiKey();
+  // fail-close: 서버 키 미설정이면 인증 판단 자체가 불가 → 차단
+  if (!supabaseUrl || !serviceKey || !geminiApiKey) {
+    console.error("[book-studio:summary] missing server configuration");
+    return res.status(500).json(
+      makeErrorResponse({ error: "Server misconfigured.", code: "SUMMARY_CONFIG_MISSING" }),
+    );
+  }
+
+  // 인증: pg_net(DB 트리거/스위퍼)은 body.token, 수동 호출은 Bearer 헤더
+  const bearer = parseBearerToken(req.headers.authorization);
+  const cronSecret = process.env.CRON_SECRET;
+  const authorized =
+    (body.token && body.token === serviceKey) ||
+    (bearer && bearer === serviceKey) ||
+    (bearer && cronSecret && bearer === cronSecret);
+  if (!authorized) {
+    return res.status(401).json(
+      makeErrorResponse({ error: "Unauthorized.", code: "SUMMARY_UNAUTHORIZED" }),
+    );
+  }
+
+  const productId = Number(body.productId);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return res.status(400).json(
+      makeErrorResponse({ error: "productId must be a positive integer.", code: "SUMMARY_BAD_PRODUCT_ID" }),
+    );
+  }
+
+  const restHeaders = {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    const productRes = await fetch(
+      `${supabaseUrl}/rest/v1/products?id=eq.${productId}&select=id,title,subject,brand,book_type,published_year,instructor_name,ai_summary`,
+      { headers: restHeaders },
+    );
+    const rows = await productRes.json().catch(() => null);
+    if (!productRes.ok || !Array.isArray(rows)) {
+      console.error("[book-studio:summary] product fetch failed", productRes.status);
+      return res.status(502).json(
+        makeErrorResponse({ error: "Failed to load product.", code: "SUMMARY_PRODUCT_FETCH_FAILED" }),
+      );
+    }
+    const product = rows[0];
+    if (!product) {
+      return res.status(404).json(
+        makeErrorResponse({ error: "Product not found.", code: "SUMMARY_PRODUCT_NOT_FOUND" }),
+      );
+    }
+    // 멱등: 이미 요약이 있으면 재생성하지 않음 (트리거·스위퍼 중복 호출 대비)
+    if (product.ai_summary) {
+      return res.status(200).json({ ok: true, id: productId, skipped: "exists" });
+    }
+
+    const { text, sources } = await generateSummaryWithRetries({
+      apiKey: geminiApiKey,
+      product,
+    });
+    if (!text || text.length < 40) {
+      throw new Error(`생성 결과가 너무 짧음 (${text?.length ?? 0}자)`);
+    }
+
+    const patchRes = await fetch(`${supabaseUrl}/rest/v1/products?id=eq.${productId}`, {
+      method: "PATCH",
+      headers: { ...restHeaders, Prefer: "return=minimal" },
+      body: JSON.stringify({
+        ai_summary: text,
+        ai_summary_sources: sources,
+        ai_summary_generated_at: new Date().toISOString(),
+      }),
+    });
+    if (!patchRes.ok) {
+      throw new Error(`저장 실패 HTTP ${patchRes.status}`);
+    }
+
+    console.log(
+      `[book-studio:summary] #${productId} OK (${text.length}자, 출처 ${sources.length})`,
+    );
+    return res.status(200).json({
+      ok: true,
+      id: productId,
+      chars: text.length,
+      sources: sources.length,
+    });
+  } catch (error) {
+    console.error(`[book-studio:summary] #${productId} failed:`, error?.message || error);
+    return res.status(502).json(
+      makeErrorResponse({
+        error: "Failed to generate summary.",
+        code: "SUMMARY_GENERATION_FAILED",
+        detail: getErrorDetail(error),
+      }),
+    );
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -259,6 +492,26 @@ export default async function handler(req, res) {
   }
 
   try {
+    // body를 인증보다 먼저 파싱 — summary 모드는 body.token으로 인증하기 때문.
+    // (표지 모드 기준 변화: 잘못된 JSON이 401보다 먼저 400을 받게 됨 — 무해)
+    let body = {};
+    try {
+      body =
+        typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
+    } catch (_parseError) {
+      return res.status(400).json(
+        makeErrorResponse({
+          error: "Invalid JSON body.",
+          code: "INVALID_JSON_BODY",
+        }),
+      );
+    }
+
+    // AI 요약 단건 생성 분기 (인증 포함 자체 처리)
+    if (body?.mode === "summary") {
+      return await handleSummaryMode(req, res, body);
+    }
+
     const token = parseBearerToken(req.headers.authorization);
     if (!token) {
       return res.status(401).json(
@@ -277,19 +530,6 @@ export default async function handler(req, res) {
         makeErrorResponse({
           error: "Server is missing GEMINI_API_KEY.",
           code: "MISSING_GEMINI_API_KEY",
-        }),
-      );
-    }
-
-    let body = {};
-    try {
-      body =
-        typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
-    } catch (_parseError) {
-      return res.status(400).json(
-        makeErrorResponse({
-          error: "Invalid JSON body.",
-          code: "INVALID_JSON_BODY",
         }),
       );
     }

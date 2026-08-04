@@ -2,8 +2,9 @@ import { createClient } from "@supabase/supabase-js";
 
 /**
  * 배송완료 D+7 자동 구매확정 Cron
- * 매일 오전 10시(KST) 실행 — auto_confirm_at <= now() 인 delivered 주문을 자동 확정
- * + 셀러 'sold' 알림 자동 발송 (CRON_SECRET으로 send-notification 호출)
+ * 매시간 실행(2026-08-04 Pro 전환으로 일 1회→매시 상향) — auto_confirm_at <= now() 인
+ * delivered 주문을 자동 확정 + 셀러 'sold' 알림 자동 발송 (CRON_SECRET으로
+ * send-notification 호출). 확정 시점이 D+7에 최대 1시간 오차로 근접.
  */
 
 async function notifySellerSold({ baseUrl, cronSecret, seller }) {

@@ -3,7 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * 배송중 주문 자동 배송완료 Cron (2026-07-24)
  *
- * 매일 1회(Hobby 플랜: 일 1회 제한, 트리거 ±59분) — status='shipping'이고 운송장이 있는
+ * 매시간 실행(2026-08-04 Pro 전환으로 일 1회→매시 상향, Hobby 시절 일 1회 제한 해소)
+ * — status='shipping'이고 운송장이 있는
  * 주문을 CJ 상품추적 API(ReqOneGdsTrc)로 조회해, 화물상태 91(배송완료)이면:
  *   1) orders.status → 'delivered' + auto_confirm_at = now()+7일
  *      (admin_update_order_status의 delivered 전이와 동일 — 그쪽 정책이 바뀌면 여기도 맞출 것)

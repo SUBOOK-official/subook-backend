@@ -14,8 +14,10 @@ import { createClient } from "@supabase/supabase-js";
 // ── mode: "summary" (2026-08-03 추가) ────────────────────────────────
 // 이 함수는 표지 스튜디오 변환 외에 상품 AI 요약 단건 생성도 겸한다
 // (body.mode === "summary" 분기, 아래 handleSummaryMode).
-// 별도 파일로 두지 않는 이유: Vercel Hobby 플랜 서버리스 함수 12개 상한에
-// 이미 도달해 13번째 함수 추가 시 배포가 거부됨. 같은 Gemini 호출 계열이라 여기 통합.
+// 별도 파일로 두지 않은 이유: 구현 당시(2026-08-03) Vercel Hobby 함수 12개 상한에
+// 도달해 13번째 함수 추가 시 배포가 거부됐음. 같은 Gemini 호출 계열이라 여기 통합.
+// (2026-08-04 Pro 전환으로 상한은 풀렸지만, DB 트리거가 이 URL을 바라보고 있고
+//  동작에 문제없어 구조는 유지 — 분리하려면 migration의 URL도 함께 바꿀 것.)
 // 호출 경로: products INSERT DB 트리거 + pg_cron 스위퍼(pg_net, body.token 인증,
 // migration 20260804031500) / 수동 Bearer(CRON_SECRET·service key).
 // 대량 백필은 여전히 backend/scripts/generate-ai-summaries.mjs (GitHub Actions).

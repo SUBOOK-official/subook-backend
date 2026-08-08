@@ -1,11 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
 
 // ──────────────────────────────────────────────────────────────────────────
-// CJ대한통운 Open API (택배 표준 API) — 수거(집화) 예약 접수
+// CJ대한통운 Open API (택배 표준 API) — 수거(집화) 예약 접수 + 예약 취소
 //
-// 흐름: ReqOneDayToken(1Day 토큰) → ReqInvcNo(채번=운송장번호) → RegBook(예약접수)
+// 접수 흐름: ReqOneDayToken(1Day 토큰) → ReqInvcNo(채번=운송장번호) → RegBook(예약접수)
 //   RegBook이 ORA-00001(중복 접수)로 거부되면: CnclBook(유령 예약 취소, 오늘~D-2) →
 //   재채번 → 재접수 (자동 복구). 접미사 우회는 이중 기사출동 위험으로 수거에는 없음.
+// 취소 흐름(action=cancel): 접수된 박스별 CnclBook → 전부 성공해야 DB 상태도 cancelled.
+//   CJ 취소 불가 사유(기사 스캔·운송장 출력 등)는 결과에 원문으로 실어 UI에 노출한다.
+//   (과거 admin 취소가 DB만 바꿔 CJ 예약이 살아남던 문제의 수리 — 2026-08-08 조영훈 건)
 // 인증: 헤더 CJ-Gateway-APIKey + 바디 DATA.TOKEN_NUM + DATA.CUST_ID(고객사코드)
 // 환경: 테스트 https://dxapi-dev.cjlogistics.com:5054 / 운영 https://dxapi.cjlogistics.com:5052
 // 규격: 개발자포털 자료실 "CJLAPI-택배 표준 API Developer Guide" (V3.9.4) 기준
@@ -703,10 +706,13 @@ async function registerCjPickupBox(pickupRequest, { token, cfg, boxSeq, totalBox
 
 // 박스별 운송장 기록 정규화. 멀티박스 도입 전 접수분(레거시)은 box_waybills가 비어
 // 있으므로 tracking_number 존재 시 1번 박스 접수분으로 간주한다.
+// 알려진 필드 외의 키(cj-tracking.js가 병합하는 tracking_status 등)는 보존해,
+// 미접수 박스 재접수 때 기존 박스의 트래킹 현황이 지워지지 않게 한다.
 function normalizeBoxWaybills(pickupRequest) {
   const raw = Array.isArray(pickupRequest.box_waybills) ? pickupRequest.box_waybills : [];
   const entries = raw
     .map((entry) => ({
+      ...(entry && typeof entry === "object" ? entry : {}),
       box_seq: Number(entry?.box_seq),
       tracking_number: String(entry?.tracking_number || "").trim(),
       cust_use_no: String(entry?.cust_use_no || "").trim(),

@@ -18,6 +18,8 @@ const CJ_REQUEST_TIMEOUT_MS = Number(process.env.CJ_REQUEST_TIMEOUT_MS) || 12_00
 // CJ 운영 서버 콜드 워밍업에서 첫 연결이 자주 끊겨(fetch failed) 여러 번 필요 → 기본 5회.
 const CJ_RETRY_COUNT = Number(process.env.CJ_RETRY_COUNT) || 5;
 const MAX_BULK_PICKUP_COUNT = 30;
+// 요청당 박스 상한 — CJ 접수는 박스당 1건씩 나가므로 폭주 방어. 초과 시 요청 분할 안내.
+const MAX_BOXES_PER_REQUEST = Number(process.env.CJ_MAX_BOXES_PER_REQUEST) || 5;
 const CJ_CARRIER_NAME = "CJ대한통운";
 
 const DEFAULT_TOKEN_ENDPOINT = "/ReqOneDayToken";
@@ -42,6 +44,7 @@ const PICKUP_SELECT = `
   item_count,
   tracking_number,
   tracking_carrier,
+  box_waybills,
   cj_request_id,
   cj_pickup_registered_at,
   cj_tracking_status,
@@ -498,27 +501,38 @@ function buildGoodsArray(pickupRequest) {
   ];
 }
 
+// 박스별 CJ 고객사용번호. CJ 접수 PK가 (고객ID+접수일자+CUST_USE_NO)라 박스마다 달라야 한다.
+// 1번 박스는 기존 접수분과의 호환을 위해 요청번호 그대로, 2번째부터 "-B<seq>" 접미사.
+// (요청번호 자체에 접미사를 붙이면 우리 DB의 번호 생성기가 깨지므로 CJ 전송용으로만 쓴다.)
+function boxCustUseNo(requestNumber, boxSeq) {
+  return boxSeq === 1 ? requestNumber : `${requestNumber}-B${boxSeq}`;
+}
+
 // 예약접수(RegBook) 바디 구성. 발송인(SENDR)=셀러, 수취인(RCVR)=수북 입고센터.
-function buildRegBookPayload(pickupRequest, { token, invcNo, cfg }) {
+// ⚠ 멀티박스: CJ 운송장은 박스(개별 화물)당 1장 필요 — 박스마다 이 payload로 접수 1건씩
+//   나간다. BOX_QTY는 항상 1 (과거엔 box_count를 넣고 접수는 1건만 해서 송장이 모자랐음).
+function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, totalBoxes = 1 }) {
   const sender = splitPhone(pickupRequest.pickup_recipient_phone);
   const warehouse = splitPhone(cfg.warehousePhone);
-  const boxQty = Math.max(1, Number(pickupRequest.box_count) || 1);
+  const custUseNo = boxCustUseNo(pickupRequest.request_number, boxSeq);
   const colctYmd = dateToYmd(pickupRequest.desired_pickup_date) || kstYmd();
+  // 기사님이 현장에서 몇 박스째인지 알 수 있도록 REMARK 앞에 표기
+  const boxPrefix = totalBoxes > 1 ? `[박스 ${boxSeq}/${totalBoxes}] ` : "";
 
   return {
     CUST_ID: cfg.custId,
     TOKEN_NUM: token,
     RCPT_YMD: kstYmd(),
-    CUST_USE_NO: pickupRequest.request_number, // 고객사용번호(주문/멱등 키)
+    CUST_USE_NO: custUseNo, // 고객사용번호(주문/멱등 키, 박스별로 상이)
     RCPT_DV: cfg.rcptDv,
     WORK_DV_CD: cfg.workDvCd,
     REQ_DV_CD: cfg.reqDvCd,
-    MPCK_KEY: pickupRequest.request_number,
+    MPCK_KEY: custUseNo,
     CAL_DV_CD: cfg.calDvCd,
     FRT_DV_CD: cfg.frtDvCd,
     CNTR_ITEM_CD: cfg.cntrItemCd,
     BOX_TYPE_CD: cfg.boxTypeCd,
-    BOX_QTY: String(boxQty),
+    BOX_QTY: "1",
     FRT: "0",
     CUST_MGMT_DLCM_CD: cfg.custId,
 
@@ -562,7 +576,7 @@ function buildRegBookPayload(pickupRequest, { token, invcNo, cfg }) {
     COLCT_EXPCT_YMD: colctYmd, // 집화(수거) 예정일
     PRT_ST: cfg.prtSt,
     ARTICLE_AMT: "0",
-    REMARK_1: String(pickupRequest.pickup_memo || "").slice(0, 100),
+    REMARK_1: (boxPrefix + String(pickupRequest.pickup_memo || "")).slice(0, 100),
     COD_YN: cfg.codYn,
     DLV_DV: cfg.dlvDv,
     ARRAY: buildGoodsArray(pickupRequest),
@@ -577,9 +591,10 @@ function isCjDuplicateBooking(body) {
 
 // 예약취소(CnclBook) 바디 — 접수 바디와 동일 구조에 REQ_DV_CD=02(취소), 대상 접수일자 지정.
 // 유령 예약의 운송장번호는 알 수 없으므로 INVC_NO는 생략(PK 아님). RCPT_DV=02(수거)는 그대로 매칭.
-function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd }) {
+// 박스별 CUST_USE_NO가 접수 키이므로 취소도 같은 boxSeq로 맞춰야 해당 박스 예약만 취소된다.
+function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd, boxSeq = 1, totalBoxes = 1 }) {
   const payload = {
-    ...buildRegBookPayload(pickupRequest, { token, invcNo: "", cfg }),
+    ...buildRegBookPayload(pickupRequest, { token, invcNo: "", cfg, boxSeq, totalBoxes }),
     RCPT_YMD: rcptYmd,
     REQ_DV_CD: "02",
   };
@@ -590,7 +605,7 @@ function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd }) {
 // 유령 예약(응답 유실로 우리 DB에 기록되지 못한 CJ 접수) 취소.
 // 접수일자를 모르므로 오늘~D-2를 순차 시도한다. 대상 없는 날짜는 CJ가 E로 응답 — 무해.
 // 실패해도 던지지 않고 결과만 수집한다(이후 재접수 시도가 최종 판정).
-async function cancelStrayBookings(pickupRequest, { token, cfg }) {
+async function cancelStrayBookings(pickupRequest, { token, cfg, boxSeq = 1, totalBoxes = 1 }) {
   const results = [];
   for (let daysAgo = 0; daysAgo <= 2; daysAgo += 1) {
     const rcptYmd = kstYmd(new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000));
@@ -598,7 +613,7 @@ async function cancelStrayBookings(pickupRequest, { token, cfg }) {
       const body = await postCj(
         cfg,
         cfg.cnclBookEndpoint,
-        buildCancelPayload(pickupRequest, { token, cfg, rcptYmd }),
+        buildCancelPayload(pickupRequest, { token, cfg, rcptYmd, boxSeq, totalBoxes }),
         token,
       );
       results.push({ rcptYmd, ok: isCjSuccess(body), detail: getCjMessage(body).slice(0, 200) });
@@ -609,18 +624,23 @@ async function cancelStrayBookings(pickupRequest, { token, cfg }) {
   return results;
 }
 
-function makeMockTrackingNumber(pickupRequest) {
+function makeMockTrackingNumber(pickupRequest, boxSeq = 1) {
   const nowDigits = kstYmd().slice(2) + String(Date.now()).slice(-4);
-  const idDigits = String(pickupRequest.id || 0).padStart(6, "0").slice(-6);
+  const idDigits = String((pickupRequest.id || 0) * 10 + boxSeq).padStart(6, "0").slice(-6);
   return `${nowDigits}${idDigits}`.slice(-12).padStart(12, "0");
 }
 
-async function registerCjPickup(pickupRequest, { token, cfg }) {
+// 박스 1개 접수: 채번 → RegBook (+ORA-00001 자동 복구). 멀티박스 요청은 이 함수를
+// 박스 수만큼 호출한다 — 운송장은 박스당 1장이라 접수도 박스당 1건이어야 한다.
+async function registerCjPickupBox(pickupRequest, { token, cfg, boxSeq, totalBoxes }) {
+  const custUseNo = boxCustUseNo(pickupRequest.request_number, boxSeq);
+
   if (isMockMode()) {
-    const trackingNumber = makeMockTrackingNumber(pickupRequest);
+    const trackingNumber = makeMockTrackingNumber(pickupRequest, boxSeq);
     return {
       trackingNumber,
-      cjRequestId: `MOCK-${pickupRequest.request_number}`,
+      custUseNo,
+      cjRequestId: `MOCK-${custUseNo}`,
       rawResponse: { mock: true, RESULT_CD: "S", trackingNumber },
     };
   }
@@ -629,43 +649,44 @@ async function registerCjPickup(pickupRequest, { token, cfg }) {
   let invcNo = await reqInvcNo(cfg, token);
 
   // 2) 예약접수 (헤더 키 = 토큰)
-  let body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg }), token);
+  let body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq, totalBoxes }), token);
   let healed = null;
 
   // ── ORA-00001(중복 접수) 자동 복구 ─────────────────────────────────────
   // 과거 시도가 CJ에는 접수됐는데 응답이 유실되면(타임아웃/연결 끊김) 우리 DB에 운송장이
-  // 없는 채로 CJ에 유령 예약이 남아, 같은 요청번호 재접수가 전부 중복 거부된다.
-  // 유령 예약 취소(CnclBook) 후 새 운송장번호로 1회 재접수.
+  // 없는 채로 CJ에 유령 예약이 남아, 같은 고객사용번호 재접수가 전부 중복 거부된다.
+  // 유령 예약 취소(CnclBook) 후 새 운송장번호로 1회 재접수. 취소도 같은 박스의
+  // CUST_USE_NO로 나가므로 다른 박스의 정상 예약은 건드리지 않는다.
   // ⚠ 배송(cj-delivery)과 달리 접미사 우회 최후수단은 두지 않는다 — 수거는 접수만으로
   //   기사 출동이 잡히므로, 취소 불가(이미 스캔 등) 상태에서 우회 접수하면 이중 출동이 된다.
   if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
     console.warn("[cj-pickup] duplicate booking — auto-heal start", {
-      requestNumber: pickupRequest.request_number,
+      custUseNo,
       detail: getCjMessage(body).slice(0, 200),
     });
-    const cancelResults = await cancelStrayBookings(pickupRequest, { token, cfg });
+    const cancelResults = await cancelStrayBookings(pickupRequest, { token, cfg, boxSeq, totalBoxes });
     console.warn("[cj-pickup] stray cancel results", {
-      requestNumber: pickupRequest.request_number,
+      custUseNo,
       cancelResults,
     });
 
     // 취소된 유령 예약이 물고 있던 번호와 분리되도록 항상 새로 채번한다.
     invcNo = await reqInvcNo(cfg, token);
-    body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg }), token);
+    body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq, totalBoxes }), token);
     healed = "cancel-reregister";
   }
 
   if (!isCjSuccess(body)) {
     const error = makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
     if (healed && isCjDuplicateBooking(body)) {
-      error.message = `CJ에 같은 요청번호의 수거 예약이 남아 있는데 취소가 불가한 상태입니다 (${getCjMessage(body)}). 기사 배정/스캔이 이미 진행됐을 수 있으니 이중 접수하지 말고, CJ 추적 조회 또는 지점 문의로 기존 접수 상태를 확인해 주세요.`;
+      error.message = `CJ에 같은 고객사용번호(${custUseNo})의 수거 예약이 남아 있는데 취소가 불가한 상태입니다 (${getCjMessage(body)}). 기사 배정/스캔이 이미 진행됐을 수 있으니 이중 접수하지 말고, CJ 추적 조회 또는 지점 문의로 기존 접수 상태를 확인해 주세요.`;
     }
     throw error;
   }
 
   // 성공 즉시 운송장번호를 로그로 남긴다 — 응답 유실·DB 기록 실패 시 복구 근거.
   console.log("[cj-pickup] regbook ok", {
-    requestNumber: pickupRequest.request_number,
+    custUseNo,
     invcNo,
     healed,
   });
@@ -673,10 +694,36 @@ async function registerCjPickup(pickupRequest, { token, cfg }) {
   // RegBook 성공 응답은 INVC_NO를 돌려주지 않으므로 우리가 채번한 번호가 곧 운송장.
   return {
     trackingNumber: invcNo,
+    custUseNo,
     cjRequestId: invcNo,
     healed,
     rawResponse: body,
   };
+}
+
+// 박스별 운송장 기록 정규화. 멀티박스 도입 전 접수분(레거시)은 box_waybills가 비어
+// 있으므로 tracking_number 존재 시 1번 박스 접수분으로 간주한다.
+function normalizeBoxWaybills(pickupRequest) {
+  const raw = Array.isArray(pickupRequest.box_waybills) ? pickupRequest.box_waybills : [];
+  const entries = raw
+    .map((entry) => ({
+      box_seq: Number(entry?.box_seq),
+      tracking_number: String(entry?.tracking_number || "").trim(),
+      cust_use_no: String(entry?.cust_use_no || "").trim(),
+      registered_at: entry?.registered_at ?? null,
+    }))
+    .filter((entry) => Number.isInteger(entry.box_seq) && entry.box_seq >= 1 && entry.tracking_number);
+
+  if (entries.length === 0 && pickupRequest.tracking_number) {
+    entries.push({
+      box_seq: 1,
+      tracking_number: pickupRequest.tracking_number,
+      cust_use_no: pickupRequest.request_number,
+      registered_at: pickupRequest.cj_pickup_registered_at || null,
+    });
+  }
+
+  return entries.sort((a, b) => a.box_seq - b.box_seq);
 }
 
 function getErrorDetail(error) {
@@ -744,13 +791,38 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
     };
   }
 
-  if (pickupRequest.tracking_number && !force) {
+  const totalBoxes = Math.max(1, Number(pickupRequest.box_count) || 1);
+  if (totalBoxes > MAX_BOXES_PER_REQUEST) {
+    return {
+      pickupRequestId,
+      requestNumber: pickupRequest.request_number,
+      success: false,
+      status: "failed",
+      error: `박스 ${totalBoxes}개는 요청당 상한(${MAX_BOXES_PER_REQUEST}개)을 초과합니다. 수거 요청을 나눠서 접수해 주세요.`,
+      code: "TOO_MANY_BOXES",
+    };
+  }
+
+  // 이미 접수된 박스는 건너뛰고 미접수 박스만 접수한다(부분 실패 후 재시도 = 멱등).
+  // force는 기록 무시 후 전체 재접수 — 기존 예약이 살아있으면 박스별 자동 복구(취소→재접수)로 흡수.
+  const existingWaybills = force ? [] : normalizeBoxWaybills(pickupRequest);
+  const existingSeqs = new Set(existingWaybills.map((entry) => entry.box_seq));
+  const missingSeqs = [];
+  for (let seq = 1; seq <= totalBoxes; seq += 1) {
+    if (!existingSeqs.has(seq)) {
+      missingSeqs.push(seq);
+    }
+  }
+
+  if (missingSeqs.length === 0) {
     return {
       pickupRequestId,
       requestNumber: pickupRequest.request_number,
       success: true,
       status: "skipped",
       trackingNumber: pickupRequest.tracking_number,
+      registeredBoxes: existingWaybills.length,
+      totalBoxes,
       pickupRequest,
     };
   }
@@ -766,62 +838,113 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
     };
   }
 
-  try {
-    const cjResult = await registerCjPickup(pickupRequest, { token, cfg });
-    const registeredAt = new Date().toISOString();
-    const { error: updateError } = await supabase
-      .from("pickup_requests")
-      .update({
-        status: "pickup_scheduled",
+  let waybills = existingWaybills;
+  const registeredResults = [];
+  const boxErrors = [];
+
+  for (const boxSeq of missingSeqs) {
+    try {
+      const cjResult = await registerCjPickupBox(pickupRequest, { token, cfg, boxSeq, totalBoxes });
+      const registeredAt = new Date().toISOString();
+      const entry = {
+        box_seq: boxSeq,
         tracking_number: cjResult.trackingNumber,
-        tracking_carrier: CJ_CARRIER_NAME,
-        cj_request_id: cjResult.cjRequestId,
-        cj_pickup_registered_at: registeredAt,
-        cj_pickup_response: cjResult.rawResponse,
-      })
-      .eq("id", pickupRequest.id);
+        cust_use_no: cjResult.custUseNo,
+        registered_at: registeredAt,
+      };
+      waybills = [...waybills.filter((w) => w.box_seq !== boxSeq), entry].sort((a, b) => a.box_seq - b.box_seq);
 
-    if (updateError) {
-      throw updateError;
+      // 박스별 즉시 저장 — 후속 박스 실패나 응답 유실에도 이미 발급된 운송장을 잃지 않는다.
+      const update = {
+        status: "pickup_scheduled",
+        box_waybills: waybills,
+      };
+      if (boxSeq === 1) {
+        // 대표 운송장(기존 단일 컬럼)은 1번 박스 기준 유지 — 트래킹·알림톡·목록 표시 호환.
+        update.tracking_number = cjResult.trackingNumber;
+        update.tracking_carrier = CJ_CARRIER_NAME;
+        update.cj_request_id = cjResult.cjRequestId;
+        update.cj_pickup_registered_at = registeredAt;
+        update.cj_pickup_response = cjResult.rawResponse;
+      }
+
+      const { error: updateError } = await supabase
+        .from("pickup_requests")
+        .update(update)
+        .eq("id", pickupRequest.id);
+
+      if (updateError) {
+        // CJ 접수는 성공했는데 DB 기록이 실패한 상태 — 이벤트 로그의 운송장번호가 복구 근거.
+        updateError.trackingNumber = cjResult.trackingNumber;
+        throw updateError;
+      }
+
+      await saveLogisticsEvent(supabase, {
+        pickup_request_id: pickupRequest.id,
+        event_type: "pickup_register",
+        status: "success",
+        tracking_number: cjResult.trackingNumber,
+        payload: { box_seq: boxSeq, total_boxes: totalBoxes, cust_use_no: cjResult.custUseNo, ...cjResult.rawResponse },
+      });
+
+      registeredResults.push({ boxSeq, trackingNumber: cjResult.trackingNumber, healed: cjResult.healed || null });
+    } catch (error) {
+      await saveLogisticsEvent(supabase, {
+        pickup_request_id: pickupRequest.id,
+        event_type: "pickup_register",
+        status: "failed",
+        tracking_number: error?.trackingNumber || pickupRequest.tracking_number,
+        error_message: `[박스 ${boxSeq}/${totalBoxes}] ${getErrorDetail(error)}`,
+        payload: error?.responseBody || null,
+      });
+      boxErrors.push({ boxSeq, error, detail: getErrorDetail(error) });
     }
+  }
 
-    await saveLogisticsEvent(supabase, {
-      pickup_request_id: pickupRequest.id,
-      event_type: "pickup_register",
-      status: "success",
-      tracking_number: cjResult.trackingNumber,
-      payload: cjResult.rawResponse,
+  // 리페치 실패가 접수 결과 자체를 실패로 둔갑시키지 않도록 방어 (운송장은 이미 박스별로 저장됨)
+  let updatedPickupRequest = null;
+  try {
+    updatedPickupRequest = await getPickupRequest(supabase, pickupRequest.id);
+  } catch (refetchError) {
+    console.error("[cj-pickup] refetch after register failed", {
+      requestNumber: pickupRequest.request_number,
+      message: refetchError?.message || "",
     });
+  }
+  const registeredCount = updatedPickupRequest
+    ? normalizeBoxWaybills(updatedPickupRequest).length
+    : waybills.length;
 
-    const updatedPickupRequest = await getPickupRequest(supabase, pickupRequest.id);
-
+  if (boxErrors.length > 0) {
+    const failedSeqText = boxErrors.map((be) => be.boxSeq).join(", ");
     return {
       pickupRequestId,
       requestNumber: pickupRequest.request_number,
-      success: true,
-      status: "registered",
-      trackingNumber: cjResult.trackingNumber,
-      cjRequestId: cjResult.cjRequestId,
-      // 자동 복구(유령 예약 취소 후 재접수)로 발급된 경우 표시 — null이면 정상 1회 접수.
-      healed: cjResult.healed || null,
+      success: false,
+      status: "failed",
+      error:
+        `박스 ${failedSeqText}번 접수 실패 (${totalBoxes}박스 중 ${registeredCount}건 접수됨 — ` +
+        `재시도하면 남은 박스만 다시 접수합니다): ${boxErrors[0].detail || "CJ 수거 접수에 실패했습니다."}`,
+      code: boxErrors[0].error?.code || "CJ_PICKUP_FAILED",
+      registeredBoxes: registeredCount,
+      totalBoxes,
       pickupRequest: updatedPickupRequest,
     };
-  } catch (error) {
-    await saveLogisticsEvent(supabase, {
-      pickup_request_id: pickupRequest.id,
-      event_type: "pickup_register",
-      status: "failed",
-      tracking_number: pickupRequest.tracking_number,
-      error_message: getErrorDetail(error),
-      payload: error?.responseBody || null,
-    });
-
-    return {
-      pickupRequestId,
-      requestNumber: pickupRequest.request_number,
-      ...makeFailedResult(pickupRequestId, error),
-    };
   }
+
+  return {
+    pickupRequestId,
+    requestNumber: pickupRequest.request_number,
+    success: true,
+    status: "registered",
+    trackingNumber: updatedPickupRequest?.tracking_number || registeredResults[0]?.trackingNumber,
+    cjRequestId: updatedPickupRequest?.cj_request_id || null,
+    // 자동 복구(유령 예약 취소 후 재접수)로 발급된 박스가 있으면 표시 — null이면 정상 접수.
+    healed: registeredResults.find((r) => r.healed)?.healed || null,
+    registeredBoxes: registeredCount,
+    totalBoxes,
+    pickupRequest: updatedPickupRequest,
+  };
 }
 
 export default async function handler(req, res) {

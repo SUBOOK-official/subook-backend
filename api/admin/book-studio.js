@@ -42,6 +42,12 @@ Requirements (must be strictly followed):
 `.trim();
 
 const MAX_IMAGE_BASE64_LENGTH = 6_000_000;
+// ⚠ Vercel 함수는 요청/응답 본문 모두 4.5MB가 상한이고, 초과하면 우리 코드가 아니라
+// 플랫폼이 413(FUNCTION_PAYLOAD_TOO_LARGE)으로 끊는다 — 클라이언트에는 JSON이 아닌
+// 에러 페이지가 내려와 "원인 불명 실패"로 보인다. 2K 결과가 상한에 걸리면 1K로 재생성해
+// 응답을 줄인다(아래 generateStudioImageWithFallback). JSON 래퍼 여유를 두고 4.2MB에서 컷.
+// 출처: https://vercel.com/docs/functions/limitations#request-body-size
+const MAX_OUTPUT_BASE64_LENGTH = 4_200_000;
 const allowedInputMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function makeErrorResponse({ error, code, detail }) {
@@ -229,15 +235,39 @@ async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }
 
   let lastError = null;
 
-  for (const attempt of attempts) {
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const isLastAttempt = index === attempts.length - 1;
+
     try {
-      return await requestGeminiImage({
+      const response = await requestGeminiImage({
         apiKey,
         imageBase64,
         mimeType,
         imageSize: attempt.imageSize,
         timeoutMs: attempt.timeoutMs,
       });
+
+      const output = getImageOutput(response);
+      if (!output) {
+        const emptyError = new Error("Model response did not contain an image.");
+        emptyError.code = "MODEL_EMPTY_IMAGE_OUTPUT";
+        emptyError.status = 502;
+        emptyError.detail = String(response?.text || "");
+        throw emptyError;
+      }
+
+      // 응답 본문 상한 초과분은 더 작은 해상도로 재생성해서 회수한다.
+      if (output.imageBase64.length > MAX_OUTPUT_BASE64_LENGTH) {
+        const tooLargeError = new Error(
+          `Generated image exceeds the response body limit (base64=${output.imageBase64.length}).`,
+        );
+        tooLargeError.code = "STUDIO_OUTPUT_TOO_LARGE";
+        tooLargeError.status = 502;
+        throw tooLargeError;
+      }
+
+      return output;
     } catch (error) {
       lastError = error;
       console.error("[book-studio] Gemini generation attempt failed", {
@@ -249,7 +279,12 @@ async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }
         message: error?.message || "",
       });
 
-      if (!isRetryableGeminiError(error)) {
+      const recoverable =
+        isRetryableGeminiError(error) ||
+        error?.code === "STUDIO_OUTPUT_TOO_LARGE" ||
+        error?.code === "MODEL_EMPTY_IMAGE_OUTPUT";
+
+      if (isLastAttempt || !recoverable) {
         throw error;
       }
     }
@@ -577,22 +612,12 @@ export default async function handler(req, res) {
       );
     }
 
-    const response = await generateStudioImageWithFallback({
+    // 이미지 추출·응답 크기 검증까지 마친 결과를 받는다(해상도 폴백 포함).
+    const output = await generateStudioImageWithFallback({
       apiKey: geminiApiKey,
       imageBase64,
       mimeType,
     });
-
-    const output = getImageOutput(response);
-    if (!output) {
-      return res.status(502).json({
-        ...makeErrorResponse({
-          error: "Model response did not contain an image.",
-          code: "MODEL_EMPTY_IMAGE_OUTPUT",
-          detail: response?.text || "",
-        }),
-      });
-    }
 
     return res.status(200).json(output);
   } catch (error) {

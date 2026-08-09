@@ -3,41 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * 배송완료 D+7 자동 구매확정 Cron
  * 매시간 실행(2026-08-04 Pro 전환으로 일 1회→매시 상향) — auto_confirm_at <= now() 인
- * delivered 주문을 자동 확정 + 셀러 'sold' 알림 자동 발송 (CRON_SECRET으로
- * send-notification 호출). 확정 시점이 D+7에 최대 1시간 오차로 근접.
+ * delivered 주문을 자동 확정. 확정 시점이 D+7에 최대 1시간 오차로 근접.
+ * (2026-08-09 템플릿 v2: 셀러 'sold' 판매완료 알림톡 폐지 — RPC가 반환하는
+ *  sellers_to_notify는 무시하고 확정 처리만 수행한다.)
  */
-
-async function notifySellerSold({ baseUrl, cronSecret, seller }) {
-  // 동일 핸들러 도메인의 send-notification을 CRON_SECRET 인증으로 호출
-  const url = `${baseUrl}/api/admin/send-notification`;
-  const body = {
-    notificationType: "sold",
-    recipientPhone: seller.seller_phone,
-    recipientName: seller.seller_name,
-    recipientUserId: seller.seller_user_id,
-    refType: "order",
-    refId: seller.order_id,
-    templateVariables: {
-      bookTitle: seller.book_title,
-      settlementDate: seller.settlement_date,
-    },
-  };
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cronSecret}`,
-      },
-      body: JSON.stringify(body),
-    });
-    return { ok: response.ok, status: response.status };
-  } catch (err) {
-    console.error("notifySellerSold fetch failed:", err.message);
-    return { ok: false, status: 0 };
-  }
-}
 
 export default async function handler(req, res) {
   // ⚠️ Cron 요청 검증 (fail-close): CRON_SECRET 미설정이면 항상 401.
@@ -83,28 +52,7 @@ export default async function handler(req, res) {
 
     console.log("Auto-confirm result:", JSON.stringify(data));
 
-    // 셀러별 'sold' 알림 발송 (실패해도 confirmed 자체는 유지)
-    const sellers = Array.isArray(data?.sellers_to_notify) ? data.sellers_to_notify : [];
-    let notifySent = 0;
-    let notifyFailed = 0;
-    if (sellers.length > 0) {
-      const protocol = req.headers["x-forwarded-proto"] || "https";
-      const host = req.headers["x-forwarded-host"] || req.headers.host;
-      const baseUrl = `${protocol}://${host}`;
-      const results = await Promise.allSettled(
-        sellers.map((seller) => notifySellerSold({ baseUrl, cronSecret, seller })),
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled" && r.value.ok) notifySent += 1;
-        else notifyFailed += 1;
-      }
-    }
-
-    return res.status(200).json({
-      ...data,
-      notifications_sent: notifySent,
-      notifications_failed: notifyFailed,
-    });
+    return res.status(200).json(data);
   } catch (err) {
     console.error("Auto-confirm unexpected error:", err);
     return res.status(500).json({ error: "Internal server error" });

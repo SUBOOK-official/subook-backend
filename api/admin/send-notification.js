@@ -7,11 +7,11 @@ const SOLAPI_REQUEST_TIMEOUT_MS = 5_000;
 const SOLAPI_RETRY_COUNT = 1;
 
 // ── 알림 유형 허용 목록 ──────────────────────────────────────
+// 2026-08-09 템플릿 v2 전환: sold(판매완료)·arrived(입고완료)는 폐지됨.
+// 과거 로그 재발송 시 두 타입은 400 INVALID_NOTIFICATION_TYPE — 의도된 동작.
 const VALID_NOTIFICATION_TYPES = new Set([
   "pickup_accepted",
-  "arrived",
   "inspection_done",
-  "sold",
   "settlement_done",
   "order_confirmed",
   "shipping_started",
@@ -22,12 +22,10 @@ const VALID_NOTIFICATION_TYPES = new Set([
   "refund_completed",
 ]);
 
-// 카카오 알림톡 템플릿 코드 매핑
+// 카카오 알림톡 템플릿 코드 매핑 (notification_logs.template_code용 내부 라벨)
 const TEMPLATE_CODES = {
   pickup_accepted: "SB_PICKUP_ACCEPTED",
-  arrived: "SB_ARRIVED",
   inspection_done: "SB_INSPECTION_DONE",
-  sold: "SB_SOLD",
   settlement_done: "SB_SETTLEMENT_DONE",
   order_confirmed: "SB_ORDER_CONFIRMED",
   shipping_started: "SB_SHIPPING_STARTED",
@@ -37,89 +35,103 @@ const TEMPLATE_CODES = {
 };
 
 // ── 메시지 본문 생성 ─────────────────────────────────────────
+// ⚠ 솔라피에 등록된 v2 템플릿 본문과 반드시 동일하게 유지할 것 (줄바꿈 포함).
+// 실제 수신 내용은 카카오가 등록 템플릿 + 변수 치환으로 렌더하므로, 이 함수는
+// notification_logs.message_body와 사이트 내 알림 본문을 발송 내용과 일치시키는 용도다.
 function buildMessageBody(type, vars) {
   switch (type) {
     case "pickup_accepted":
       return (
-        `[수북] 수거 접수 완료\n` +
-        `요청번호: ${vars.requestNumber}\n` +
-        `교재: ${vars.itemCount}권\n` +
-        `운송장: ${vars.trackingNumber || "배정 예정"}\n` +
-        `택배기사가 1~2일 내에 수거합니다.`
+        `[수북(SUBOOK) 교재 수거 접수 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `교재 수거 신청이 정상적으로 접수되었습니다.\n` +
+        `► 요청번호 : ${vars.requestNumber}\n` +
+        `► 수거 교재 : ${vars.itemCount}권\n` +
+        `► 운송장 : ${vars.trackingNumber || "배정 예정"}\n` +
+        `택배기사가 접수일로부터 1~2일 이내에 방문하여 교재를 수거할 예정입니다.\n` +
+        `택배기사 방문 전까지 교재가 훼손되지 않도록 안전하게 포장해 주시고, 빠른 시일 내에 택배기사가 수거할 수 있는 장소에 준비해 주세요.\n` +
+        `택배사 사정 및 방문 일정에 따라 수거 시간이 다소 변경될 수 있습니다.`
       );
 
-    case "arrived":
-      return (
-        `[수북] 교재 입고 완료\n` +
-        `교재 ${vars.itemCount}권이 도착했습니다.\n` +
-        `검수를 시작합니다.\n` +
-        `결과는 1~3일 내에 알려드릴게요.`
-      );
-
+    // v2: 등급·가격 상세(#{inspectionResult}) 제거 — 상세는 마이페이지에서 확인.
     case "inspection_done":
       return (
-        `[수북] 검수 완료\n` +
-        `${vars.inspectionResult || ""}\n` +
-        `마이페이지에서 상세 내역을 확인하실 수 있습니다.`
-      );
-
-    case "sold":
-      return (
-        `[수북] 교재 판매 완료!\n` +
-        `${vars.bookTitle}이(가) 판매되었습니다.\n` +
-        `정산 예정일: ${vars.settlementDate}`
+        `[수북(SUBOOK) 검수 완료 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `보내주신 교재의 검수가 완료되었습니다.\n` +
+        `검수 결과 및 상세 내역은 수북(SUBOOK) 마이페이지에서 확인하실 수 있습니다.\n` +
+        `검수 결과에 대한 문의사항이 있으신 경우 고객센터를 통해 문의해 주세요.`
       );
 
     case "settlement_done":
       return (
-        `[수북] 정산 완료\n` +
-        `정산 금액: ${vars.amount}원\n` +
-        `입금 계좌: ${vars.bankName} ****${vars.accountLast4}\n` +
-        `마이페이지에서 확인하세요.`
+        `[수북(SUBOOK) 정산 완료 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `판매하신 교재에 대한 정산이 완료되어 안내드립니다.\n` +
+        `► 정산 금액 : ${vars.amount}원\n` +
+        `► 입금 계좌 : ${vars.bankName} ****${vars.accountLast4}\n` +
+        `정산 금액은 위 계좌로 입금 처리되었습니다.\n` +
+        `정산 내역은 수북(SUBOOK) 마이페이지에서 자세히 확인하실 수 있습니다.\n` +
+        `정산 관련 문의사항이 있으신 경우 수북(SUBOOK) 고객센터로 문의해 주세요.`
       );
 
     case "order_confirmed":
       return (
-        `[수북] 주문 확인\n` +
-        `주문번호: ${vars.orderNumber}\n` +
-        `${vars.itemSummary || ""}\n` +
-        `결제 금액: ${vars.totalAmount}원\n` +
-        `배송 예상: 2~3일`
+        `[수북(SUBOOK) 주문 확인 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `고객님의 주문이 정상적으로 확인되었습니다.\n` +
+        `► 주문번호 : ${vars.orderNumber}\n` +
+        `► 상품명 : ${vars.itemSummary || ""}\n` +
+        `► 결제 금액 : ${vars.totalAmount}원\n` +
+        `► 예상 배송 소요기간 : 2~3일\n` +
+        `배송은 결제 및 주문 확인 후 순차적으로 진행됩니다.\n` +
+        `택배사 사정 및 날씨, 도로 상황 등에 따라 배송 예정일은 변경될 수 있습니다.\n` +
+        `주문해 주셔서 감사합니다.`
       );
 
     case "shipping_started":
       return (
-        `[수북] 배송 시작\n` +
-        `운송장: CJ ${vars.trackingNumber}\n` +
-        `배송추적: ${vars.trackingUrl || "https://www.cjlogistics.com/ko/tool/parcel/tracking"}`
+        `[수북(SUBOOK) 배송 시작 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `주문하신 교재가 발송되어 배송이 시작되었습니다.\n` +
+        `► 운송장 번호 : CJ대한통운 ${vars.trackingNumber}\n` +
+        `택배사 사정 및 날씨, 도로 상황 등에 따라 배송 예정일은 변경될 수 있습니다.\n` +
+        `배송 현황은 운송장 번호를 통해 확인하실 수 있습니다.\n` +
+        `교재가 안전하게 도착할 수 있도록 최선을 다하겠습니다.`
       );
 
     case "delivery_done":
       return (
-        `[수북] 교재 도착!\n` +
-        `교재가 도착했습니다.\n` +
-        `확인 후 구매확정 부탁드려요.\n` +
-        `7일 후 자동 확정됩니다.`
+        `[수북(SUBOOK) 교재 도착 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `주문하신 교재의 배송이 완료되었습니다.\n` +
+        `교재를 수령하신 후 상품 상태를 확인하시고 구매확정을 부탁드립니다.\n` +
+        `구매확정을 완료하지 않으신 경우 배송완료일로부터 7일 후 자동으로 구매확정 처리됩니다.`
       );
 
     // 카카오 검수 정책: 찜(단순 관심) 기반 문구는 광고성으로 반려됨.
     // 수신자 액션("재입고 알림을 신청")을 고정값으로 명시해야 알림톡 승인 가능.
-    // 솔라피에 등록하는 템플릿 본문과 반드시 동일하게 유지할 것.
     case "restock":
       return (
-        `[수북] 재입고 알림\n` +
-        `회원님이 재입고 알림을 신청하신 교재 "${vars.productTitle}"이(가) 재입고되었습니다.\n` +
-        `상품 페이지에서 바로 구매하실 수 있습니다.\n\n` +
+        `[수북(SUBOOK) 재입고 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `회원님께서 재입고 알림을 신청하신 교재가 재입고되어 안내드립니다.\n` +
+        `► 상품명 : ${vars.productTitle}\n` +
+        `재입고된 상품은 상품 페이지에서 바로 구매하실 수 있습니다.\n` +
         `※ 본 메시지는 회원님의 재입고 알림 신청에 의해 발송되는 정보성 메시지입니다.`
       );
 
     case "refund_completed":
       return (
-        `[수북] 환불 완료\n` +
-        `주문번호: ${vars.orderNumber}\n` +
-        `환불 금액: ${vars.totalAmount}원\n` +
-        `사유: ${vars.reason || "환불 처리"}\n` +
-        `영업일 기준 2~5일 내 카드사·은행을 통해 환불됩니다.`
+        `[수북(SUBOOK) 환불 완료 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `고객님의 주문에 대한 환불 처리가 완료되었습니다.\n` +
+        `► 주문번호 : ${vars.orderNumber}\n` +
+        `► 환불 금액 : ${vars.totalAmount}원\n` +
+        `► 환불 사유 : ${vars.reason || "환불 처리"}\n` +
+        `환불 금액은 결제 수단에 따라 영업일 기준 1~5일 이내 카드사 또는 은행을 통해 환불될 예정입니다.\n` +
+        `카드사 및 은행의 사정에 따라 실제 환불 완료 시점은 다소 차이가 있을 수 있습니다.\n` +
+        `환불 관련 문의사항이 있으신 경우 수북(SUBOOK) 고객센터로 문의해 주세요.`
       );
 
     default:
@@ -131,9 +143,7 @@ function buildMessageBody(type, vars) {
 function buildInAppTitle(type, vars) {
   switch (type) {
     case "pickup_accepted": return "수거 접수가 완료되었어요";
-    case "arrived":         return "교재 입고 완료";
     case "inspection_done": return "검수 결과 도착";
-    case "sold":            return `"${vars.bookTitle ?? "내 교재"}" 판매 완료`;
     case "settlement_done": return "정산이 완료되었어요";
     case "order_confirmed": return "주문 결제가 확인되었어요";
     case "shipping_started":return "배송이 시작되었어요";
@@ -408,18 +418,6 @@ export default async function handler(req, res) {
       error: "recipientPhone is required",
       code: "MISSING_RECIPIENT_PHONE",
     }));
-  }
-
-  // 입고 완료(arrived)는 권수가 0이면 "교재 0권이 도착했습니다"로 나가 셀러가 당황한다 —
-  // UI에서도 막지만 재발송(로그 뷰어) 등 다른 경로를 위해 서버에서도 차단.
-  if (notificationType === "arrived") {
-    const arrivedCount = Number(templateVariables?.itemCount);
-    if (!Number.isFinite(arrivedCount) || arrivedCount <= 0) {
-      return res.status(400).json(makeErrorResponse({
-        error: "등록된 교재가 0권이라 입고 알림톡을 발송하지 않습니다. 책 등록 후 다시 시도하세요.",
-        code: "ARRIVED_ITEM_COUNT_ZERO",
-      }));
-    }
   }
 
   const templateCode = TEMPLATE_CODES[notificationType];

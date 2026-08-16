@@ -335,6 +335,14 @@ export default async function handler(req, res) {
         pgCancelled,
         error: commit.error.message,
       });
+      // 운영 슬랙 즉시 경보 — PG 취소 성공·DB 미반영(돈-장부 불일치)은 방치되면 안 됨
+      try {
+        await supabase.rpc("notify_ops_slack", {
+          p_text: `:rotating_light: 환불 CRITICAL: PG 취소 성공 후 DB 확정 실패\n주문 ${order.order_number} · ${amount.toLocaleString("ko-KR")}원 · ${commit.error.message}`,
+        });
+      } catch {
+        // 경보 실패는 무시 — 응답 흐름을 막지 않는다
+      }
       return res.status(500).json(
         makeErrorResponse({
           error: pgCancelled

@@ -549,7 +549,8 @@ function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, to
     SENDR_CELL_NO3: sender.n3,
     SENDR_ZIP_NO: pickupRequest.pickup_postal_code || "",
     SENDR_ADDR: pickupRequest.pickup_address_line1 || "",
-    SENDR_DETAIL_ADDR: pickupRequest.pickup_address_line2 || "",
+    // 상세주소 미입력 대응 — CJ Oracle은 빈 문자열을 NULL로 취급해 ORA-01400으로 접수를 거부한다.
+    SENDR_DETAIL_ADDR: String(pickupRequest.pickup_address_line2 || "").trim() || "-",
 
     // 수취인 = 수북 입고센터
     RCVR_NM: cfg.warehouseName,
@@ -573,7 +574,7 @@ function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, to
     ORDRR_CELL_NO3: sender.n3,
     ORDRR_ZIP_NO: pickupRequest.pickup_postal_code || "",
     ORDRR_ADDR: pickupRequest.pickup_address_line1 || "",
-    ORDRR_DETAIL_ADDR: pickupRequest.pickup_address_line2 || "",
+    ORDRR_DETAIL_ADDR: String(pickupRequest.pickup_address_line2 || "").trim() || "-",
 
     INVC_NO: invcNo, // 채번에서 받은 운송장번호
     COLCT_EXPCT_YMD: colctYmd, // 집화(수거) 예정일

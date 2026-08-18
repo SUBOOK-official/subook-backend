@@ -569,7 +569,8 @@ function buildRegBookPayload(order, { token, invcNo, cfg }) {
     RCVR_CELL_NO3: receiver.n3,
     RCVR_ZIP_NO: order.shipping_postal_code || "",
     RCVR_ADDR: order.shipping_address_line1 || "",
-    RCVR_DETAIL_ADDR: order.shipping_address_line2 || "",
+    // 상세주소 미입력 주문 대응 — CJ Oracle은 빈 문자열을 NULL로 취급해 ORA-01400으로 접수를 거부한다.
+    RCVR_DETAIL_ADDR: String(order.shipping_address_line2 || "").trim() || "-",
 
     // 주문자 = 수북 (발송 주체)
     ORDRR_NM: cfg.warehouseName,

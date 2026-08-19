@@ -147,7 +147,19 @@ async function getNicepayPayment(tid) {
 
 // 나이스페이 결제 취소 — POST /v1/payments/{tid}/cancel (Basic clientKey:secretKey).
 // cancelAmt 없으면 전액취소. 부분취소는 취소 요청별 고유 orderId 필수(중복 거부).
-async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
+// ⚠ U112(이미 사용된 OrderId): 취소가 실패해도 나이스페이는 orderId를 등록해 둔다 —
+//   과거 실패한 시도가 결정적 orderId(-R누계)를 소진하면 재시도가 영구히 U112로 막힌다
+//   (2026-08-19 ORD-2608-0147 실사례). 이 경우 거래조회로 "잔액 == 이번 취소액"
+//   (= 남은 전액 취소, 돈이 아직 그대로)을 확인한 때에 한해 새 orderId로 1회 재시도한다.
+//   잔액 전액 취소만 재시도하므로 이중취소는 구조적으로 불가능 — 경쟁 취소가 먼저
+//   성공하면 잔액이 0이 되어 이쪽 요청은 U123/2032(취소가능금액 초과)로 거부된다.
+// ⚠ 2033(부분취소 불가능금액): cancelAmt를 담으면 금액이 전액이어도 '부분취소'로
+//   라우팅되고, 매입 전(당일) 거래는 카드사가 부분취소를 거부한다(같은 실사례 —
+//   이 2033 거부가 orderId를 소진해 위 U112 상태를 만든 원흉).
+//   → 이번 취소로 잔액이 0이 되는 요청(fullCancel)은 cancelAmt 없이 전액취소 폼으로
+//   보낸다. 전액취소 전 거래조회로 "나이스페이 잔액 == 취소 예정액"을 확인해
+//   DB 드리프트(콘솔 부분취소 등)로 장부가 어긋나는 것을 막는다.
+async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt, fullCancel = false, isRetry = false }) {
   const { clientKey, secretKey, apiBase } = getNicepayConfig();
   if (!clientKey || !secretKey) {
     return {
@@ -157,12 +169,41 @@ async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
     };
   }
   try {
+    // 전액취소 사전 검증 — 잔액이 취소 예정액과 다르면 진행하지 않는다 (재시도 호출은
+    // U112 게이트에서 이미 검증됨). 조회 자체가 실패하면 취소 시도로 진행 — 취소 API의
+    // 자체 잔액 검증이 최종 방어선이고, 조회 실패로 환불 전체를 막는 게 더 큰 손해.
+    if (fullCancel && !isRetry) {
+      const pre = await getNicepayPayment(tid);
+      if (pre?.resultCode === "0000") {
+        const preBalance = Number(pre?.balanceAmt ?? -1);
+        if (pre?.status === "cancelled" && preBalance === 0) {
+          return { ok: true, body: pre, alreadyCanceled: true };
+        }
+        if (preBalance !== cancelAmt) {
+          console.error("[payment-cancel] nicepay 전액취소 사전검증 실패 — 잔액 불일치", {
+            tid,
+            cancelAmt,
+            preStatus: pre?.status ?? null,
+            preBalanceAmt: pre?.balanceAmt ?? null,
+          });
+          return {
+            ok: false,
+            code: "NICEPAY_BALANCE_MISMATCH",
+            message:
+              `나이스페이 취소 가능 잔액(${preBalance.toLocaleString("ko-KR")}원)이 환불 요청 금액` +
+              `(${Number(cancelAmt ?? 0).toLocaleString("ko-KR")}원)과 다릅니다. ` +
+              `나이스페이 가맹점 콘솔에서 취소 내역을 확인해주세요.`,
+          };
+        }
+      }
+    }
     const auth = "Basic " + Buffer.from(`${clientKey}:${secretKey}`).toString("base64");
     const body = {
       reason: (reason && String(reason).slice(0, 100)) || "관리자 환불",
       orderId: cancelOrderId,
     };
-    if (Number.isInteger(cancelAmt) && cancelAmt > 0) body.cancelAmt = cancelAmt;
+    // 부분취소일 때만 cancelAmt 포함 — 전액취소는 cancelAmt 생략이 규격(있으면 2033 위험)
+    if (!fullCancel && Number.isInteger(cancelAmt) && cancelAmt > 0) body.cancelAmt = cancelAmt;
     const resp = await fetchWithTimeout(`${apiBase}/v1/payments/${encodeURIComponent(tid)}/cancel`, {
       method: "POST",
       headers: { Authorization: auth, "Content-Type": "application/json;charset=utf-8" },
@@ -177,6 +218,28 @@ async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
     const inquiryOk = inquiry?.resultCode === "0000";
     if (inquiryOk && inquiry?.status === "cancelled" && Number(inquiry?.balanceAmt ?? 0) === 0) {
       return { ok: true, body: inquiry, alreadyCanceled: true };
+    }
+    // U112(orderId 소진) + 결제가 아직 그대로(잔액 == 이번 취소액)면 새 orderId로 1회 재시도.
+    // 잔액과 취소액이 다르면(이미 일부 취소됨 등) 자동 재시도하지 않는다 — 금액 어긋남 방지.
+    if (
+      !isRetry &&
+      respBody?.resultCode === "U112" &&
+      inquiryOk &&
+      Number.isInteger(cancelAmt) &&
+      cancelAmt > 0 &&
+      Number(inquiry?.balanceAmt ?? -1) === cancelAmt &&
+      (inquiry?.status === "paid" || inquiry?.status === "partialCancelled")
+    ) {
+      const retryOrderId = `${cancelOrderId}-T${Date.now()}`;
+      console.warn("[payment-cancel] U112 orderId 소진 감지 — 새 orderId로 재시도", {
+        tid,
+        cancelOrderId,
+        retryOrderId,
+        cancelAmt,
+        inquiryStatus: inquiry?.status ?? null,
+        inquiryBalanceAmt: inquiry?.balanceAmt ?? null,
+      });
+      return cancelNicepayPayment({ tid, reason, cancelOrderId: retryOrderId, cancelAmt, fullCancel, isRetry: true });
     }
     // 여기 도달 = 진짜 실패. 운영 진단용 로그 (취소 응답 + 거래조회 결과 원본)
     console.error("[payment-cancel] nicepay cancel failed", {
@@ -197,6 +260,17 @@ async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt }) {
         message:
           `결제 취소에 실패했습니다: ${respBody?.resultMsg || "사유 미상"} — 나이스페이 조회 결과 ` +
           `부분취소 상태(취소 가능 잔액 ${Number(inquiry.balanceAmt ?? 0).toLocaleString("ko-KR")}원)입니다. ` +
+          `나이스페이 가맹점 콘솔에서 취소 내역을 확인해주세요.`,
+      };
+    }
+    if (respBody?.resultCode === "U112" && inquiryOk) {
+      return {
+        ok: false,
+        code: "U112",
+        message:
+          `결제 취소에 실패했습니다: ${respBody?.resultMsg || "이미 사용된 OrderId"} — 취소 가능 잔액 ` +
+          `${Number(inquiry?.balanceAmt ?? 0).toLocaleString("ko-KR")}원이 요청 금액 ` +
+          `${Number(cancelAmt ?? 0).toLocaleString("ko-KR")}원과 달라 자동 재시도하지 않았습니다. ` +
           `나이스페이 가맹점 콘솔에서 취소 내역을 확인해주세요.`,
       };
     }
@@ -226,6 +300,9 @@ async function cancelPgPayment({ order, reason, amount, itemIds }) {
       // 취소 요청별 고유 + 재시도엔 결정적: 환불 누계(이번 포함)를 접미사로 사용
       cancelOrderId: `${order.order_number}-R${refundedBefore + amount}`,
       cancelAmt: amount,
+      // 이번 취소로 주문 잔액이 0 → 전액취소 폼(cancelAmt 생략). 매입 전 거래는
+      // 부분취소가 카드사에서 거부(2033)되므로 전액 환불을 부분취소로 보내면 안 된다.
+      fullCancel: refundedBefore + amount === Number(order.total_amount ?? 0),
     });
   }
 

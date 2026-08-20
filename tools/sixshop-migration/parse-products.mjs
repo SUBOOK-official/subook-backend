@@ -127,12 +127,17 @@ function parseConditionGrade(s) {
   return null;
 }
 
-// "이해원T" 같은 강사명 뒤에 T가 붙은 패턴을 제목 끝에서 추출
+// "이해원T" 같은 강사명 뒤에 T가 붙은 패턴을 제목에서 추출.
+// ⚠ \S+ 로 잡으면 SHORTCUT·CIRCUIT·SET·GT 같은 영문 시리즈명이 끝의 T만 떼인 채
+//   (SHORTCU·CIRCUI·SE·G) 강사명으로 들어간다 — 2026-05-06 식스샵 임포트 오염 53건의
+//   원인(2026-08-20 프로덕션 교정 완료). 시리즈어가 제목 앞쪽이라 첫 매치로 이겨서
+//   제목 끝의 진짜 강사명까지 덮었다.
+//   → 한글 2~4자만 강사로 인정. DB측 infer_product_meta_from_title()의
+//     '([가-힣]{2,4})T(?:\s|$)' 와 동일 규칙으로 맞춘다.
 function extractInstructor(title) {
   if (!title) return null;
-  const m = title.match(/(\S+)T(?:\s|$)/);
+  const m = title.match(/([가-힣]{2,4})T(?:\s|$)/);
   if (!m) return null;
-  // 강사명에 한글/영문이 섞일 수 있어 보수적으로
   return m[1];
 }
 
@@ -255,6 +260,10 @@ for (const row of dataRows) {
   // (published_year는 nullable이라 검증 안 함)
   const issues = [];
   if (!title) issues.push("제목 비어있음");
+  // 강사명 사후 검증 — 파서가 바뀌어도 비한글 이상값이 조용히 새어나가지 않게 한다
+  if (instructorName && !/^[가-힣]{2,5}$/.test(instructorName)) {
+    issues.push(`강사명 이상값: ${instructorName}`);
+  }
   if (!subject) issues.push("과목 미파싱");
   else if (!KNOWN_SUBJECTS.has(subject)) issues.push(`과목 enum 매칭 실패: ${subject}`);
   if (!brand) issues.push("브랜드 미파싱");

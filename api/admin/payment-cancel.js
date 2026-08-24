@@ -25,6 +25,10 @@ import { createClient } from "@supabase/supabase-js";
 //   처리 불가(새로고침 안내) — 이전에는 나이스페이 TID를 토스 API로 보내는 버그가 있었다.
 //
 // 계좌이체 주문(payment_key 없음)은 PG 단계를 건너뛰고 DB 환불만 (운영자가 수동 송금).
+//
+// restock=false(재입고 보류, 2026-08-24 반품 수거 자동화): 실물 미회수 상태에서 책이
+// 재판매로 풀리지 않게 RPC가 복원 대신 보류 스탬프만 남긴다. 회수 후 어드민의
+// '회수 완료' 버튼(admin_confirm_return_recovery)이 복원/폐기를 확정한다.
 
 const TOSS_CANCEL_BASE = "https://api.tosspayments.com/v1/payments";
 const NICEPAY_PROD_API_BASE = "https://api.nicepay.co.kr";
@@ -334,7 +338,7 @@ export default async function handler(req, res) {
     return res.status(status).json(makeErrorResponse({ error: err.message, code: err.message }));
   }
 
-  const { orderId, reason, acknowledgeRecovery, itemIds, refundAmount } = req.body || {};
+  const { orderId, reason, acknowledgeRecovery, itemIds, refundAmount, restock } = req.body || {};
   if (!orderId) {
     return res.status(400).json(makeErrorResponse({ error: "orderId is required", code: "MISSING_ORDER_ID" }));
   }
@@ -359,6 +363,8 @@ export default async function handler(req, res) {
       p_refund_amount: Number.isInteger(refundAmount) && refundAmount > 0 ? refundAmount : null,
       p_reason: reason ?? null,
       p_acknowledge_recovery: Boolean(acknowledgeRecovery),
+      // 미지정(구버전 클라이언트)이면 기존 동작(즉시 재판매 복원) 유지
+      p_restock: restock !== false,
     };
 
     // 1) DB 검증만 먼저 — PG 취소 전에 모든 거부 사유(RECOVERY_REQUIRED_ACK 포함)를 걸러낸다
@@ -468,6 +474,7 @@ export default async function handler(req, res) {
     p_order_id: orderId,
     p_reason: reason ?? null,
     p_acknowledge_recovery: Boolean(acknowledgeRecovery),
+    p_restock: restock !== false,
   });
   if (error) {
     // RECOVERY_REQUIRED_ACK 등은 메시지를 그대로 전달 → 프론트가 손실확인 모달로 분기.

@@ -1083,37 +1083,10 @@ function applyBoxCancelledAt(rawWaybills, entry, cancelledAt) {
   ];
 }
 
-async function processPickupCancellation({ supabase, pickupRequestId, reason, getToken, cfg }) {
-  const pickupRequest = await getPickupRequest(supabase, pickupRequestId);
-  if (!pickupRequest) {
-    return {
-      pickupRequestId,
-      success: false,
-      status: "failed",
-      error: "수거 요청을 찾을 수 없습니다.",
-      code: "PICKUP_NOT_FOUND",
-    };
-  }
-
-  const base = {
-    pickupRequestId,
-    requestNumber: pickupRequest.request_number,
-    requestStatus: pickupRequest.status,
-  };
-
-  // 이미 취소된 요청도 CJ 예약 정리(cleanup)만은 허용 — CnclBook 미연동 시절/DB만 취소
-  // 경로로 남은 살아있는 예약(조영훈 PU-2607-0002)을 걷어내는 자기수리 경로.
-  const isCleanupOnly = pickupRequest.status === "cancelled";
-  if (!isCleanupOnly && !CANCELLABLE_PICKUP_STATUSES.includes(pickupRequest.status)) {
-    return {
-      ...base,
-      success: false,
-      status: "failed",
-      code: "INVALID_PICKUP_STATUS",
-      error: `이미 수거가 진행/완료된 상태(${pickupRequest.status})라 취소할 수 없습니다.`,
-    };
-  }
-
+// 이 요청의 살아있는 CJ 예약 박스를 전부 취소하고 box_waybills(cancelled_at)에 기록한다.
+// 성공/실패를 박스 단위로 수집만 하고 판정은 호출부에 맡긴다 — 취소 확정(processPickupCancellation)과
+// 재접수(processPickupReregistration)가 같은 취소 절차를 공유하되 후속 처리가 다르기 때문.
+async function cancelAllCjBoxes({ supabase, pickupRequest, getToken, cfg }) {
   const { boxes, skippedNotes } = listCancellableCjBoxes(pickupRequest);
 
   let rawWaybills = Array.isArray(pickupRequest.box_waybills) ? pickupRequest.box_waybills : [];
@@ -1165,6 +1138,47 @@ async function processPickupCancellation({ supabase, pickupRequestId, reason, ge
       });
     }
   }
+
+  return { boxes, skippedNotes, cancelledBoxes, boxErrors };
+}
+
+async function processPickupCancellation({ supabase, pickupRequestId, reason, getToken, cfg }) {
+  const pickupRequest = await getPickupRequest(supabase, pickupRequestId);
+  if (!pickupRequest) {
+    return {
+      pickupRequestId,
+      success: false,
+      status: "failed",
+      error: "수거 요청을 찾을 수 없습니다.",
+      code: "PICKUP_NOT_FOUND",
+    };
+  }
+
+  const base = {
+    pickupRequestId,
+    requestNumber: pickupRequest.request_number,
+    requestStatus: pickupRequest.status,
+  };
+
+  // 이미 취소된 요청도 CJ 예약 정리(cleanup)만은 허용 — CnclBook 미연동 시절/DB만 취소
+  // 경로로 남은 살아있는 예약(조영훈 PU-2607-0002)을 걷어내는 자기수리 경로.
+  const isCleanupOnly = pickupRequest.status === "cancelled";
+  if (!isCleanupOnly && !CANCELLABLE_PICKUP_STATUSES.includes(pickupRequest.status)) {
+    return {
+      ...base,
+      success: false,
+      status: "failed",
+      code: "INVALID_PICKUP_STATUS",
+      error: `이미 수거가 진행/완료된 상태(${pickupRequest.status})라 취소할 수 없습니다.`,
+    };
+  }
+
+  const { boxes, skippedNotes, cancelledBoxes, boxErrors } = await cancelAllCjBoxes({
+    supabase,
+    pickupRequest,
+    getToken,
+    cfg,
+  });
 
   if (boxErrors.length > 0) {
     return {
@@ -1241,6 +1255,167 @@ async function processPickupCancellation({ supabase, pickupRequestId, reason, ge
     status: "cancelled",
     cancelledBoxes,
     totalCjBoxes: boxes.length,
+    skippedNotes,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// 수거 재접수 (action=reregister) — 기존 CJ 예약 전량 취소 → 새 조건으로 다시 접수.
+//
+// 배경: 셀러가 신청과 다르게 포장해 기사가 수거를 거부하는 사고(2박스 신청 → 1박스에
+//   몰아담아 20kg 초과, PU-2608-0020 / 2026-08-31)가 생기면 재포장 후 다시 접수해야 한다.
+//   그런데 기존 경로에는 재접수 수단이 없었다 — 접수가 끝난 요청은 접수 버튼이 숨겨지고,
+//   [수거 취소]를 누르면 status=cancelled로 잠겨 그 요청은 영영 다시 접수할 수 없었다.
+//
+// ⚠ 안전 규칙: 기존 예약이 하나라도 취소되지 않으면 재접수하지 않는다. 수거는 접수만으로
+//   기사 출동이 잡히므로, 살아있는 예약 위에 덧접수하면 기사가 두 번 출동한다.
+//   (registerCjPickupBox의 접미사 우회를 수거에서 뺀 것과 같은 이유.)
+// ──────────────────────────────────────────────────────────────────────────
+
+const REREGISTERABLE_PICKUP_STATUSES = ["pending", "pickup_scheduled"];
+
+async function processPickupReregistration({
+  supabase,
+  pickupRequestId,
+  boxCount,
+  desiredPickupDate,
+  skipCancel = false,
+  getToken,
+  cfg,
+}) {
+  const pickupRequest = await getPickupRequest(supabase, pickupRequestId);
+  if (!pickupRequest) {
+    return {
+      pickupRequestId,
+      success: false,
+      status: "failed",
+      error: "수거 요청을 찾을 수 없습니다.",
+      code: "PICKUP_NOT_FOUND",
+    };
+  }
+
+  const base = {
+    pickupRequestId,
+    requestNumber: pickupRequest.request_number,
+    requestStatus: pickupRequest.status,
+  };
+
+  if (!REREGISTERABLE_PICKUP_STATUSES.includes(pickupRequest.status)) {
+    return {
+      ...base,
+      success: false,
+      status: "failed",
+      code: "INVALID_PICKUP_STATUS",
+      error: `이미 수거가 진행/완료된 상태(${pickupRequest.status})라 재접수할 수 없습니다.`,
+    };
+  }
+
+  const nextBoxCount =
+    Number.isInteger(boxCount) && boxCount >= 1
+      ? boxCount
+      : Math.max(1, Number(pickupRequest.box_count) || 1);
+
+  if (nextBoxCount > MAX_BOXES_PER_REQUEST) {
+    return {
+      ...base,
+      success: false,
+      status: "failed",
+      code: "TOO_MANY_BOXES",
+      error: `박스 ${nextBoxCount}개는 요청당 상한(${MAX_BOXES_PER_REQUEST}개)을 초과합니다.`,
+    };
+  }
+
+  // 1) 기존 예약 전량 취소 — 하나라도 실패하면 재접수하지 않는다(이중 출동 방지).
+  //    skipCancel은 "CJ에 기존 예약이 이미 없다"를 운영자가 확인한 경우의 탈출구.
+  //    CJ 취소 거부 사유는 '기사 스캔 완료'와 '대상 없음'이 모두 같은 E 코드로 오고
+  //    규격서에도 구분 코드가 없어(V3.9.4) 자동 판별하지 않는다 — 사유 원문을 사람에게 보이고
+  //    명시적으로 한 번 더 누르게 한다. (취소 플로우의 'DB만 취소' 폴백과 같은 방식)
+  let cancelledBoxes = 0;
+  let skippedNotes = [];
+
+  if (!skipCancel) {
+    const cancelResult = await cancelAllCjBoxes({ supabase, pickupRequest, getToken, cfg });
+    cancelledBoxes = cancelResult.cancelledBoxes;
+    skippedNotes = cancelResult.skippedNotes;
+
+    if (cancelResult.boxErrors.length > 0) {
+      return {
+        ...base,
+        success: false,
+        status: "failed",
+        code: cancelResult.boxErrors[0].code || "CJ_CANCEL_FAILED",
+        cancelledBoxes,
+        skippedNotes,
+        // 클라이언트가 '취소 없이 재접수' 폴백을 띄울지 판단하는 근거.
+        canSkipCancel: true,
+        error:
+          cancelResult.boxErrors.map((boxError) => boxError.detail).join(" / ") +
+          " — 기존 예약이 남아 있어 재접수하지 않았습니다. 살아있는 예약 위에 덧접수하면 기사가 두 번 출동합니다. 추적 조회나 CJ 지점으로 기존 예약 상태를 확인한 뒤 다시 시도해 주세요.",
+      };
+    }
+  }
+
+  // 2) 재접수 조건 반영 (박스 수 · 수거 예정일)
+  //    수거 예정일은 COLCT_EXPCT_YMD로 그대로 나가므로, 지난 날짜인 채로 재접수하면 안 된다.
+  const update = {};
+  if (nextBoxCount !== Number(pickupRequest.box_count)) {
+    update.box_count = nextBoxCount;
+  }
+  if (desiredPickupDate) {
+    update.desired_pickup_date = desiredPickupDate;
+  }
+
+  if (Object.keys(update).length > 0) {
+    update.updated_at = new Date().toISOString();
+    const { error: updateError } = await supabase
+      .from("pickup_requests")
+      .update(update)
+      .eq("id", pickupRequest.id);
+
+    if (updateError) {
+      return {
+        ...base,
+        success: false,
+        status: "failed",
+        code: "DB_UPDATE_FAILED",
+        cancelledBoxes,
+        skippedNotes,
+        error: `기존 CJ 예약은 취소했지만 재접수 조건 저장에 실패했습니다 (${updateError.message}) — 다시 시도해 주세요.`,
+      };
+    }
+  }
+
+  // 3) 새 조건으로 재접수. 취소된 박스(cancelled_at)는 접수분으로 치지 않으므로
+  //    processPickupRegistration이 전 박스를 미접수로 보고 새 운송장을 발급한다.
+  let token = null;
+  try {
+    token = await getToken();
+  } catch (error) {
+    return {
+      ...base,
+      success: false,
+      status: "failed",
+      code: "CJ_TOKEN_FAILED",
+      cancelledBoxes,
+      skippedNotes,
+      error: `기존 CJ 예약은 취소됐지만 토큰 발급에 실패해 재접수하지 못했습니다 (${getErrorDetail(error)}) — [CJ 재접수]를 다시 눌러 주세요.`,
+    };
+  }
+
+  // skipCancel이면 기존 박스에 cancelled_at이 안 찍혀 있어 미접수로 안 보이므로 force로 전량 재접수.
+  const result = await processPickupRegistration({
+    supabase,
+    pickupRequestId,
+    force: skipCancel,
+    token,
+    cfg,
+  });
+
+  return {
+    ...result,
+    requestStatus: base.requestStatus,
+    reregistered: true,
+    cancelledBoxes,
     skippedNotes,
   };
 }
@@ -1335,6 +1510,52 @@ export default async function handler(req, res) {
         cleanedCount: results.filter((result) => result.status === "cj_cleaned").length,
         cancelledBoxCount: results.reduce((sum, result) => sum + (result.cancelledBoxes || 0), 0),
         failedCount,
+        results,
+      });
+    }
+
+    if (action === "reregister") {
+      // 재접수는 취소(CnclBook) → 접수(RegBook)를 한 흐름으로 — 토큰은 지연 발급 후 공유.
+      let tokenPromise = null;
+      const getToken = () => {
+        if (!tokenPromise) {
+          tokenPromise = getOneDayToken(cfg);
+        }
+        return tokenPromise;
+      };
+
+      const boxCount = Number.parseInt(String(body.boxCount ?? ""), 10);
+      const desiredPickupDate = String(body.desiredPickupDate || "").trim() || null;
+      if (desiredPickupDate && !/^\d{4}-\d{2}-\d{2}$/.test(desiredPickupDate)) {
+        return res.status(400).json(
+          makeErrorResponse({
+            error: "desiredPickupDate must be YYYY-MM-DD.",
+            code: "INVALID_PICKUP_DATE",
+          }),
+        );
+      }
+
+      const results = [];
+      for (const pickupRequestId of pickupRequestIds) {
+        results.push(
+          await processPickupReregistration({
+            supabase,
+            pickupRequestId,
+            boxCount: Number.isInteger(boxCount) ? boxCount : null,
+            desiredPickupDate,
+            skipCancel: Boolean(body.skipCancel),
+            getToken,
+            cfg,
+          }),
+        );
+      }
+
+      const failedCount = results.filter((result) => !result.success).length;
+      return res.status(200).json({
+        success: failedCount === 0,
+        successCount: results.length - failedCount,
+        failedCount,
+        cancelledBoxCount: results.reduce((sum, result) => sum + (result.cancelledBoxes || 0), 0),
         results,
       });
     }

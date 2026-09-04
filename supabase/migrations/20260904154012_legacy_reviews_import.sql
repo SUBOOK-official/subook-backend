@@ -492,9 +492,10 @@ begin
   from unnest(v_product_ids) with ordinality as input(product_id, ordinality)
   join public.products p on p.id = input.product_id;
 
-  v_source_key := md5(
-    v_email || E'\n' || v_content || E'\n' || array_to_string(v_product_ids, ',')
-  );
+  v_source_key := encode(digest(
+    v_email || E'\n' || v_content || E'\n' || array_to_string(v_product_ids, ','),
+    'sha256'
+  ), 'hex');
 
   select lr.id into v_existing_id
   from public.legacy_reviews lr

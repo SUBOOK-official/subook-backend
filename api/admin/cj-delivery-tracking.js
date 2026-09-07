@@ -357,6 +357,8 @@ export default async function handler(req, res) {
       // 멈추고 나머지는 다음 크론으로 이월 (미전환 건은 shipping으로 남아 자동 재시도).
       const startedAt = Date.now();
       const SOFT_DEADLINE_MS = 240_000;
+      const trackingCache = new Map();
+      const notifiedWaybills = new Set();
 
       for (const order of targets) {
         if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
@@ -370,7 +372,11 @@ export default async function handler(req, res) {
         };
 
         try {
-          const latest = await fetchLatestCargoStatus(cfg, token, String(order.tracking_number).trim());
+          const waybill = String(order.tracking_number).trim();
+          if (!trackingCache.has(waybill)) {
+            trackingCache.set(waybill, await fetchLatestCargoStatus(cfg, token, waybill));
+          }
+          const latest = trackingCache.get(waybill);
           entry.cj_status_code = latest.statusCode;
           entry.cj_status_text = latest.statusText;
           entry.delivered = isDeliveredStatus(latest);
@@ -398,10 +404,14 @@ export default async function handler(req, res) {
 
             if (entry.transitioned) {
               deliveredCount += 1;
-              const notifyResult = await notifyBuyerDelivered({ baseUrl, cronSecret, order });
-              entry.notified = notifyResult.ok;
-              if (notifyResult.ok) notifySent += 1;
-              else notifyFailed += 1;
+              if (!notifiedWaybills.has(waybill)) {
+                const notifyResult = await notifyBuyerDelivered({ baseUrl, cronSecret, order });
+                entry.notified = notifyResult.ok;
+                if (notifyResult.ok) {
+                  notifySent += 1;
+                  notifiedWaybills.add(waybill);
+                } else notifyFailed += 1;
+              }
             }
           }
         } catch (err) {

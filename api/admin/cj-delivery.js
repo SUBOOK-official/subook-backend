@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { combineDeliveryOrders, deliveryRevision } from "../_lib/deliveryGroups.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // CJ대한통운 Open API (택배 표준 API) — 배송(발송) 예약 접수 + 자체 운송장 발급
@@ -50,7 +51,9 @@ const ORDER_SELECT = `
     title,
     option_label,
     quantity,
-    unit_price
+    unit_price,
+    refunded_at,
+    books ( location )
   )
 `;
 
@@ -271,10 +274,10 @@ function isRetryableStatus(status) {
   return status === 408 || status === 429 || status >= 500;
 }
 
-async function requestJsonWithRetry(url, options) {
+async function requestJsonWithRetry(url, options, retryCount = CJ_RETRY_COUNT) {
   let lastError = null;
 
-  for (let attempt = 0; attempt <= CJ_RETRY_COUNT; attempt += 1) {
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(makeTimeoutError(CJ_REQUEST_TIMEOUT_MS)), CJ_REQUEST_TIMEOUT_MS);
 
@@ -295,7 +298,7 @@ async function requestJsonWithRetry(url, options) {
       error.statusCode = response.status;
       error.responseBody = body;
 
-      if (attempt < CJ_RETRY_COUNT && isRetryableStatus(response.status)) {
+      if (attempt < retryCount && isRetryableStatus(response.status)) {
         lastError = error;
         continue;
       }
@@ -311,7 +314,7 @@ async function requestJsonWithRetry(url, options) {
       // "fetch failed"(연결 실패/리셋 등) — CJ 운영 콜드 워밍업에서 흔한 케이스. 재시도로 관통.
       const errText = String(normalizedError?.message || normalizedError?.code || "");
       const isNetwork = /fetch failed|ECONN|EAI_AGAIN|socket|network|reset|und_err|terminated|other side closed/i.test(errText);
-      if (attempt < CJ_RETRY_COUNT && (isTimeout || isNetwork)) {
+      if (attempt < retryCount && (isTimeout || isNetwork)) {
         await new Promise((r) => setTimeout(r, 600)); // 짧은 백오프로 연결 warm 유도
         continue;
       }
@@ -352,7 +355,7 @@ async function postCj(cfg, endpoint, data, apiKey) {
     method: "POST",
     headers: buildCjHeaders(apiKey),
     body: JSON.stringify({ DATA: data }),
-  });
+  }, endpoint === cfg.regBookEndpoint ? 0 : CJ_RETRY_COUNT);
 
   return body;
 }
@@ -487,15 +490,6 @@ function kstYmd(date = new Date()) {
 }
 
 // 'YYYY-MM-DD' (DATE 컬럼) → 'YYYYMMDD'
-function dateToYmd(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "";
-  }
-  const digits = text.replace(/[^0-9]/g, "");
-  return digits.length >= 8 ? digits.slice(0, 8) : "";
-}
-
 // 배송 품목(ARRAY) 구성 — 주문 상품 목록(order_items) 기준.
 function buildGoodsArray(order) {
   const items = Array.isArray(order.order_items) ? order.order_items : [];
@@ -543,7 +537,7 @@ function buildRegBookPayload(order, { token, invcNo, cfg }) {
     FRT_DV_CD: cfg.frtDvCd,
     CNTR_ITEM_CD: cfg.cntrItemCd,
     BOX_TYPE_CD: cfg.boxTypeCd,
-    BOX_QTY: "1", // 배송은 주문당 1박스
+    BOX_QTY: "1", // 합배송 주문 전체를 실제 한 박스로 접수
     FRT: "0",
     CUST_MGMT_DLCM_CD: cfg.custId,
 
@@ -647,10 +641,10 @@ function makeMockTrackingNumber(order) {
   return `${nowDigits}${idDigits}`.slice(-12).padStart(12, "0");
 }
 
-async function registerCjDelivery(order, { token, cfg }) {
+async function registerCjDelivery(order, { token, cfg, beforeBooking }) {
   if (isMockMode()) {
     const trackingNumber = makeMockTrackingNumber(order);
-    return {
+    const result = {
       trackingNumber,
       cjRequestId: `MOCK-${order.order_number}`,
       addr: {
@@ -659,6 +653,8 @@ async function registerCjDelivery(order, { token, cfg }) {
       },
       rawResponse: { mock: true, RESULT_CD: "S", trackingNumber },
     };
+    await beforeBooking?.(trackingNumber, result.addr);
+    return result;
   }
 
   // 1) 주소정제 → 라벨 라우팅 데이터(분류코드/주소약칭/배송점소).
@@ -678,6 +674,7 @@ async function registerCjDelivery(order, { token, cfg }) {
   let invcNo = await reqInvcNo(cfg, token);
 
   // 3) 예약접수 (헤더 키 = 토큰)
+  await beforeBooking?.(invcNo, addr);
   let body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(order, { token, invcNo, cfg }), token);
   let healed = null;
   let cjCustUseNo = order.order_number;
@@ -699,6 +696,7 @@ async function registerCjDelivery(order, { token, cfg }) {
 
     // 취소된 유령 예약이 물고 있던 번호와 분리되도록 항상 새로 채번한다.
     invcNo = await reqInvcNo(cfg, token);
+    await beforeBooking?.(invcNo, addr);
     body = await postCj(cfg, cfg.regBookEndpoint, buildRegBookPayload(order, { token, invcNo, cfg }), token);
     healed = "cancel-reregister";
 
@@ -708,6 +706,7 @@ async function registerCjDelivery(order, { token, cfg }) {
     if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
       cjCustUseNo = `${order.order_number}-R${kstHHmmss()}`;
       invcNo = await reqInvcNo(cfg, token);
+      await beforeBooking?.(invcNo, addr);
       body = await postCj(
         cfg,
         cfg.regBookEndpoint,
@@ -724,6 +723,8 @@ async function registerCjDelivery(order, { token, cfg }) {
 
   if (!isCjSuccess(body)) {
     const error = makeCjBusinessError(body, "CJ_REGBOOK_FAILED");
+    // 명시적 신규 접수 거부만 안전하게 해제한다. 중복 예약 복구 도중의 실패는 운영 확인.
+    error.bookingRejected = !healed && /^E/i.test(String(body?.RESULT_CD || "")) && !isCjDuplicateBooking(body);
     if (healed) {
       error.message = `CJ에 같은 주문번호의 예약이 남아 있어 자동 취소·재접수까지 시도했지만 실패했습니다 (${getCjMessage(body)}). CJ에 해당 주문번호 예약취소를 요청한 뒤 다시 시도해 주세요.`;
     }
@@ -770,11 +771,6 @@ async function getOrder(supabase, orderId) {
   return data;
 }
 
-// 배송 송장 발급 가능 상태: 상품 준비 중(preparing) 또는 폐지 전 레거시 paid.
-function canRegisterDelivery(order) {
-  return ["preparing", "paid"].includes(order.status);
-}
-
 function normalizeIds(value) {
   const source = Array.isArray(value) ? value : [value];
   return [
@@ -807,120 +803,119 @@ function buildSenderForLabel(cfg) {
   };
 }
 
-async function processDeliveryRegistration({ supabase, orderId, force, reprint, token, cfg }) {
+async function getOrders(supabase, ids) {
+  const { data, error } = await supabase.from("orders").select(ORDER_SELECT).in("id", ids).order("id");
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function planDeliveries(supabase, orderIds) {
+  const { data, error } = await supabase.rpc("admin_plan_order_deliveries", { p_order_ids: orderIds });
+  if (error) throw error;
+  const groups = data ?? [];
+  const allOrders = await getOrders(supabase, groups.flat());
+  return groups.map((ids) => ({
+    orderIds: ids,
+    orders: allOrders.filter((order) => ids.includes(order.id)),
+  })).map((group) => ({ ...group, order: combineDeliveryOrders(group.orders), revision: deliveryRevision(group.orders) }));
+}
+
+async function loadExistingDelivery(supabase, orderId) {
   const order = await getOrder(supabase, orderId);
-  if (!order) {
-    return {
-      orderId,
-      success: false,
-      status: "failed",
-      error: "주문을 찾을 수 없습니다.",
-      code: "ORDER_NOT_FOUND",
-    };
-  }
-
-  // ── 재출력: 이미 발급된 운송장 라벨 재조회. 채번·예약접수 없음(중복 접수 방지). ──
-  if (reprint) {
-    if (!order.tracking_number) {
-      return {
-        orderId,
-        orderNumber: order.order_number,
-        success: false,
-        status: "failed",
-        error: "운송장번호가 없어 재출력할 수 없습니다. 먼저 'CJ 송장 출력'으로 발급해 주세요.",
-        code: "NO_TRACKING_NUMBER",
-      };
+  if (!order) throw new Error("주문을 찾을 수 없습니다.");
+  const { data: member, error } = await supabase.from("order_delivery_group_members")
+    .select("group_id").eq("order_id", orderId).maybeSingle();
+  if (error) throw error;
+  if (member) {
+    const { data: group, error: groupError } = await supabase.from("order_delivery_groups")
+      .select("id,state,tracking_number,routing_data").eq("id", member.group_id).single();
+    if (groupError) throw groupError;
+    if (group.state !== "registered") {
+      throw new Error(`송장 처리 중이거나 CJ 접수 결과 확인이 필요합니다. 중복 발급을 중단했습니다. 운송장: ${group.tracking_number || "미채번"}`);
     }
-    // 라벨 라우팅 데이터(분류코드/주소약칭/배달점소)는 저장돼 있지 않아 주소정제로 재조회.
-    // 실패해도(주소정제 불가) 운송장번호·주소 기반으로 라벨은 뜬다 → non-fatal.
-    let addr = null;
+    const { data: members, error: membersError } = await supabase.from("order_delivery_group_members")
+      .select("order_id").eq("group_id", member.group_id);
+    if (membersError) throw membersError;
+    return { group, orders: await getOrders(supabase, members.map((row) => row.order_id)) };
+  }
+  if (!order.tracking_number) throw new Error("운송장번호가 없습니다. 출력 대상을 다시 확인해 주세요.");
+  // 기존 수동 합배송도 같은 CJ 운송장을 여러 장 출력하지 않는다.
+  const { data: peers, error: peersError } = await supabase.from("orders").select(ORDER_SELECT)
+    .eq("tracking_number", order.tracking_number).eq("tracking_carrier", CJ_CARRIER_NAME).order("id");
+  if (peersError) throw peersError;
+  if (order.tracking_carrier !== CJ_CARRIER_NAME) throw new Error("CJ대한통운 운송장만 재출력할 수 있습니다.");
+  return { group: null, orders: peers?.length ? peers : [order] };
+}
+
+async function reprintDelivery({ supabase, orderId, token, cfg, status = "reprint" }) {
+  const { group, orders } = await loadExistingDelivery(supabase, orderId);
+  const order = combineDeliveryOrders(orders);
+  let addr = group?.routing_data ?? null;
+  if (!addr) {
     if (isMockMode()) {
-      addr = {
-        clsfCd: "2T01", subClsfCd: "1h", clsfAddr: "샘플주소약칭",
-        clldlvBranNm: "서울강남서", clldlvEmpNickNm: "H03-6구역", rspsDiv: "01", p2pCd: null,
-      };
+      addr = { clsfCd: "2T01", subClsfCd: "1h", clsfAddr: "샘플주소약칭",
+        clldlvBranNm: "서울강남서", clldlvEmpNickNm: "H03-6구역", rspsDiv: "01", p2pCd: null };
     } else {
-      try {
-        addr = await reqAddrRefine(cfg, token, buildFullAddress(order));
-      } catch {
-        addr = null;
-      }
+      try { addr = await reqAddrRefine(cfg, token, buildFullAddress(order)); } catch { addr = null; }
     }
-    return {
-      orderId,
-      orderNumber: order.order_number,
-      success: true,
-      status: "reprint",
-      trackingNumber: order.tracking_number,
-      addr,
-      sender: buildSenderForLabel(cfg),
-      order,
-    };
   }
+  return {
+    orderId: order.id, orderIds: orders.map((row) => row.id),
+    orderNumber: order.order_numbers.join(" + "), success: true, status,
+    trackingNumber: group?.tracking_number ?? order.tracking_number,
+    addr, sender: buildSenderForLabel(cfg), order,
+  };
+}
 
-  // 이미 운송장이 있으면 재발급 방지 (force=true로 강제 재발급 가능)
-  if (order.tracking_number && !force) {
-    return {
-      orderId,
-      orderNumber: order.order_number,
-      success: true,
-      status: "skipped",
-      trackingNumber: order.tracking_number,
-      order,
-    };
-  }
-
-  if (!canRegisterDelivery(order)) {
-    return {
-      orderId,
-      orderNumber: order.order_number,
-      success: false,
-      status: "failed",
-      error: `현재 상태에서는 송장 발급이 불가능합니다. (${order.status}) — '상품 준비 중' 주문만 가능합니다.`,
-      code: "INVALID_ORDER_STATUS",
-    };
-  }
-
+async function registerDeliveryGroup({ supabase, orderIds, token, cfg, expectedRevision }) {
+  let group = null;
+  let bookingStarted = false;
+  const transition = async (action, extra = {}) => {
+    const { data, error } = await supabase.rpc("admin_transition_order_delivery", {
+      p_group_id: group.id, p_claim_token: group.claim_token, p_action: action, ...extra,
+    });
+    if (error) throw error;
+    return data;
+  };
   try {
-    const cjResult = await registerCjDelivery(order, { token, cfg });
-    // 운송장번호 기록 + '배송중' 전환. (auto_confirm_at은 실제 배송완료 시점에 설정)
-    const { error: updateError } = await supabase
-      .from("orders")
-      .update({
-        status: "shipping",
-        tracking_number: cjResult.trackingNumber,
-        tracking_carrier: CJ_CARRIER_NAME,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", order.id);
-
-    if (updateError) {
-      throw updateError;
+    const { data, error } = await supabase.rpc("admin_claim_order_delivery", { p_order_ids: orderIds });
+    if (error) throw error;
+    group = data;
+    if (group.state === "registered") {
+      return await reprintDelivery({ supabase, orderId: orderIds[0], token, cfg, status: "skipped" });
     }
-
-    const updatedOrder = await getOrder(supabase, order.id);
-
+    const orders = await getOrders(supabase, orderIds);
+    if (expectedRevision && expectedRevision !== deliveryRevision(orders)) {
+      throw new Error("미리보기 이후 주문이나 품목이 변경되었습니다. 출력 대상을 다시 확인해 주세요.");
+    }
+    const order = combineDeliveryOrders(orders);
+    const result = await registerCjDelivery(order, {
+      token, cfg,
+      beforeBooking: async (trackingNumber, addr) => {
+        // CJ 요청 전에 번호를 저장. 응답 유실 시 다른 번호를 자동 발급하지 않는다.
+        group = await transition("booking", { p_tracking_number: trackingNumber, p_routing_data: addr });
+        bookingStarted = true;
+      },
+    });
+    // 모든 주문에 동일 번호/배송중 상태를 하나의 DB 트랜잭션으로 적용.
+    await transition("registered");
     return {
-      orderId,
-      orderNumber: order.order_number,
-      success: true,
-      status: "registered",
-      trackingNumber: cjResult.trackingNumber,
-      cjRequestId: cjResult.cjRequestId,
-      // 자동 복구로 발급된 경우 표시(운영 로그·프론트 확장용) — null이면 정상 1회 접수.
-      healed: cjResult.healed || null,
-      cjCustUseNo: cjResult.cjCustUseNo || null,
-      // 라벨 렌더용 데이터 — 라우팅(주소정제) + 발송인(수북). 수취인은 order에 있음.
-      addr: cjResult.addr,
-      sender: buildSenderForLabel(cfg),
-      order: updatedOrder,
+      orderId: order.id, orderIds, orderNumber: order.order_numbers.join(" + "),
+      success: true, status: "registered", trackingNumber: result.trackingNumber,
+      healed: result.healed || null, addr: result.addr, sender: buildSenderForLabel(cfg),
+      order: { ...order, status: "shipping", tracking_number: result.trackingNumber, tracking_carrier: CJ_CARRIER_NAME },
     };
   } catch (error) {
-    return {
-      orderId,
-      orderNumber: order.order_number,
-      ...makeFailedResult(orderId, error),
-    };
+    if (group && bookingStarted && error.bookingRejected) {
+      try { await transition("rejected"); bookingStarted = false; } catch { /* 해제 실패는 중복 방지 유지 */ }
+    }
+    if (group && !bookingStarted) {
+      try { await transition("failed"); } catch { /* DB에 남은 claim은 10분 뒤 안전하게 회수 */ }
+    }
+    const failure = bookingStarted
+      ? new Error(`CJ 접수 결과 확인이 필요합니다 (운송장 ${group.tracking_number}). 중복 발급을 중단했습니다. ${getErrorDetail(error)}`)
+      : error;
+    return { ...makeFailedResult(orderIds[0], failure), orderIds };
   }
 }
 
@@ -980,6 +975,18 @@ export default async function handler(req, res) {
       );
     }
 
+    if (body.preview) {
+      const groups = await planDeliveries(supabase, orderIds);
+      const plannedIds = new Set(groups.flatMap((group) => group.orderIds));
+      return res.status(200).json({
+        groups,
+        excludedOrderIds: orderIds.filter((id) => !plannedIds.has(id)),
+      });
+    }
+    if (body.force) {
+      return res.status(400).json({ error: "합배송 운송장은 강제 재발급할 수 없습니다. 기존 송장을 재출력해 주세요.", code: 400 });
+    }
+
     // 1Day 토큰은 한 번만 발급해 배치 전체에서 재사용한다.
     const cfg = getCjConfig();
     let token = null;
@@ -991,21 +998,31 @@ export default async function handler(req, res) {
     }
 
     const results = [];
-    for (const orderId of orderIds) {
+    const groups = body.reprint ? orderIds.map((id) => [id])
+      : body.group ? [orderIds]
+        : (await planDeliveries(supabase, orderIds)).map((group) => group.orderIds);
+    if (!body.reprint && !body.group) {
+      const plannedIds = new Set(groups.flat());
+      for (const id of orderIds.filter((id) => !plannedIds.has(id))) {
+        groups.push([id]); // 이미 발급된 건도 claim/reprint 경로에서 멱등 처리
+      }
+    }
+    const printedIds = new Set();
+    for (const ids of groups) {
+      if (ids.every((id) => printedIds.has(id))) continue;
       if (tokenError) {
-        results.push(makeFailedResult(orderId, tokenError));
+        results.push({ ...makeFailedResult(ids[0], tokenError), orderIds: ids });
         continue;
       }
-      results.push(
-        await processDeliveryRegistration({
-          supabase,
-          orderId,
-          force: Boolean(body.force),
-          reprint: Boolean(body.reprint),
-          token,
-          cfg,
-        }),
-      );
+      try {
+        const row = body.reprint
+          ? await reprintDelivery({ supabase, orderId: ids[0], token, cfg })
+          : await registerDeliveryGroup({ supabase, orderIds: ids, token, cfg, expectedRevision: body.expectedRevision });
+        results.push(row);
+        if (row.success) (row.orderIds ?? ids).forEach((id) => printedIds.add(id));
+      } catch (error) {
+        results.push({ ...makeFailedResult(ids[0], error), orderIds: ids });
+      }
     }
 
     const successCount = results.filter((result) => result.success).length;

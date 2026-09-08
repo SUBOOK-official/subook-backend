@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { refreshPickupTracking } from './cj-tracking.js';
+import { getOneDayToken, refreshPickupTracking } from './cj-tracking.js';
 import handler from './cj-pickup-tracking.js';
 const cfg={baseUrl:'https://cj.example.invalid',trackingEndpoint:'/track',custId:'fixture'};
 const pickup=(overrides={})=>({id:1,status:'pickup_scheduled',updated_at:'2026-09-08T00:00:00Z',tracking_number:'111111111111',box_count:2,box_waybills:[{box_seq:1,tracking_number:'111111111111'},{box_seq:2,tracking_number:'222222222222',tracking_status:'이전 상태'}],...overrides});
@@ -51,4 +51,32 @@ test('자동 조회는 CRON_SECRET 없거나 일치하지 않으면 차단한다
     let status;const response={setHeader(){},status(code){status=code;return this;},json(){return this;}};
     await handler({method:'GET',headers:{authorization}},response);assert.equal(status,401);
   }}finally{if(secret===undefined)delete process.env.CRON_SECRET;else process.env.CRON_SECRET=secret;}
+});
+test('일시적인 연결 실패는 토큰 발급과 추적에서 재시도한다',async()=>{
+  const original=globalThis.fetch;
+  try{
+    let calls=0;
+    globalThis.fetch=async()=>{
+      if(++calls===1)throw new TypeError('fetch failed',{cause:{code:'ECONNRESET'}});
+      return new Response(JSON.stringify({RESULT_CD:'S',DATA:{TOKEN_NUM:'fixture-token'}}));
+    };
+    assert.equal(await getOneDayToken({...cfg,tokenEndpoint:'/token'}),'fixture-token');assert.equal(calls,2);
+    calls=0;
+    globalThis.fetch=async()=>{
+      if(++calls===1)throw new TypeError('fetch failed',{cause:{code:'UND_ERR_CONNECT_TIMEOUT'}});
+      return new Response(JSON.stringify(arrived));
+    };
+    const row=pickup({box_count:1,box_waybills:[]}),db=client(row);
+    await refreshPickupTracking(db,row,{cfg,token:'fixture'});
+    assert.equal(calls,2);assert.equal(db.updates[0].status,'arrived');
+  }finally{globalThis.fetch=original;}
+});
+test('연결 실패가 계속되면 제한 횟수 뒤 중단하고 수거 상태를 보존한다',async()=>{
+  const original=globalThis.fetch;let calls=0;
+  globalThis.fetch=async()=>{calls++;throw new TypeError('fetch failed',{cause:{code:'ECONNRESET'}});};
+  const row=pickup({box_count:1,box_waybills:[]}),db=client(row);
+  try{
+    await assert.rejects(refreshPickupTracking(db,row,{cfg,token:'fixture'}),/fetch failed/);
+    assert.equal(calls,3);assert.equal(db.updates.length,0);assert.equal(db.logs.length,0);
+  }finally{globalThis.fetch=original;}
 });

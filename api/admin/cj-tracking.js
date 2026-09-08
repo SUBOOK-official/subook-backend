@@ -230,9 +230,8 @@ async function requestJsonWithRetry(url, options) {
         ...options,
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
-
       const body = await readResponseBody(response);
+      clearTimeout(timeoutId);
       if (response.ok) {
         return { body, status: response.status };
       }
@@ -255,7 +254,12 @@ async function requestJsonWithRetry(url, options) {
       lastError = normalizedError;
 
       const isTimeout = normalizedError?.code === "CJ_TIMEOUT" || normalizedError?.name === "AbortError";
-      if (attempt < CJ_RETRY_COUNT && isTimeout) {
+      const networkCode = normalizedError?.cause?.code || normalizedError?.code;
+      const isNetworkFailure = ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN",
+        "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"].includes(networkCode)
+        || (normalizedError instanceof TypeError && normalizedError.message === "fetch failed");
+      if (attempt < CJ_RETRY_COUNT && (isTimeout || isNetworkFailure)) {
+        await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
         continue;
       }
 

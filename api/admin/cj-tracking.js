@@ -612,87 +612,26 @@ function getErrorDetail(error) {
   return responseDetail || String(error?.message || "").slice(0, 500);
 }
 
-export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json(
-      makeErrorResponse({
-        error: "Method not allowed.",
-        code: "METHOD_NOT_ALLOWED",
-      }),
-    );
-  }
-
-  const accessToken = parseBearerToken(req.headers.authorization);
-  if (!accessToken) {
-    return res.status(401).json(
-      makeErrorResponse({
-        error: "Missing authorization token.",
-        code: "MISSING_AUTH_TOKEN",
-      }),
-    );
-  }
-
-  try {
-    await assertAdminUser(accessToken);
-    const supabase = createServiceClient();
-
-    const pickupRequestId = Number.parseInt(String(getQueryValue(req, "pickupRequestId") || ""), 10);
-    const directWaybillNo = normalizeTrackingNumber(
-      getQueryValue(req, "waybillNo") || getQueryValue(req, "trackingNumber"),
-    );
-
-    let pickupRequest = null;
-    if (Number.isInteger(pickupRequestId) && pickupRequestId > 0) {
-      pickupRequest = await getPickupRequest(supabase, pickupRequestId);
-      if (!pickupRequest) {
-        return res.status(404).json(
-          makeErrorResponse({
-            error: "수거 요청을 찾을 수 없습니다.",
-            code: "PICKUP_NOT_FOUND",
-          }),
-        );
-      }
-    }
-
-    // 단건 직접 조회 (수거 요청 없이 운송장만) — DB 미반영, 기존 동작 유지.
-    if (!pickupRequest) {
-      if (!directWaybillNo) {
-        return res.status(400).json(
-          makeErrorResponse({
-            error: "waybillNo 또는 pickupRequestId의 운송장이 필요합니다.",
-            code: "MISSING_WAYBILL_NO",
-          }),
-        );
-      }
-
-      const tracking = await fetchCjTracking(directWaybillNo);
-      return res.status(200).json({ success: true, tracking, pickupRequest: null });
-    }
-
+export async function refreshPickupTracking(supabase, pickupRequest, shared = {}, directWaybillNo = "") {
     // 수거 요청 조회 — 박스별 운송장 전체를 추적한다 (대표 box1만 보던 구조 폐지).
     const boxTargets = normalizeBoxWaybills(pickupRequest);
     if (boxTargets.length === 0 && directWaybillNo) {
       boxTargets.push({ box_seq: 1, tracking_number: directWaybillNo });
     }
 
-    if (boxTargets.length === 0) {
-      return res.status(400).json(
-        makeErrorResponse({
-          error: "waybillNo 또는 pickupRequestId의 운송장이 필요합니다.",
-          code: "MISSING_WAYBILL_NO",
-        }),
-      );
-    }
+    if (boxTargets.length === 0) throw Object.assign(new Error("운송장이 없습니다."), { statusCode: 400 });
 
     // 토큰은 요청당 1회 발급해 박스별 조회에 재사용 (1Day 토큰 — 규격서 p6)
-    const cfg = getCjConfig();
-    const token = await getOneDayToken(cfg);
+    const cfg = shared.cfg || getCjConfig();
+    const token = shared.token || await getOneDayToken(cfg);
 
     const boxResults = [];
     let firstLookupError = null;
     for (const target of boxTargets) {
       try {
+        if (shared.deadline && Date.now() > shared.deadline - 42000) {
+          throw new Error("자동 조회 실행 한도에 가까워 다음 실행에서 다시 조회합니다.");
+        }
         const result = await fetchCjTracking(target.tracking_number, { cfg, token });
         boxResults.push({ boxSeq: target.box_seq, ...result });
       } catch (error) {
@@ -771,14 +710,20 @@ export default async function handler(req, res) {
       update.box_waybills = mergeBoxTrackingIntoWaybills(rawBoxWaybills, boxResults, checkedAt);
     }
 
-    const { error: updateError } = await supabase
+    if (shared.dryRun) return { success: true, dryRun: true, pickupRequestId: pickupRequest.id, previousStatus: pickupRequest.status, nextStatus, boxes: boxResults.map(({ rawResponse, ...box }) => box) };
+
+    const { data: changed, error: updateError } = await supabase
       .from("pickup_requests")
       .update(update)
-      .eq("id", pickupRequest.id);
+      .eq("id", pickupRequest.id)
+      .eq("updated_at", pickupRequest.updated_at)
+      .select("id");
 
     if (updateError) {
       throw updateError;
     }
+
+    if (!changed?.length) return { success: true, skipped: "concurrent_change", pickupRequestId: pickupRequest.id };
 
     for (const box of boxResults) {
       await saveLogisticsEvent(supabase, {
@@ -797,7 +742,7 @@ export default async function handler(req, res) {
 
     const updatedPickupRequest = await getPickupRequest(supabase, pickupRequest.id);
 
-    return res.status(200).json({
+    return {
       success: true,
       tracking: {
         waybillNo: representativeWaybillNo,
@@ -813,7 +758,70 @@ export default async function handler(req, res) {
         unregisteredBoxes,
       },
       pickupRequest: updatedPickupRequest,
-    });
+    };
+}
+
+export { createServiceClient, getCjConfig, getOneDayToken, PICKUP_SELECT };
+
+export default async function handler(req, res) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json(
+      makeErrorResponse({
+        error: "Method not allowed.",
+        code: "METHOD_NOT_ALLOWED",
+      }),
+    );
+  }
+
+  const accessToken = parseBearerToken(req.headers.authorization);
+  if (!accessToken) {
+    return res.status(401).json(
+      makeErrorResponse({
+        error: "Missing authorization token.",
+        code: "MISSING_AUTH_TOKEN",
+      }),
+    );
+  }
+
+  try {
+    await assertAdminUser(accessToken);
+    const supabase = createServiceClient();
+
+    const pickupRequestId = Number.parseInt(String(getQueryValue(req, "pickupRequestId") || ""), 10);
+    const directWaybillNo = normalizeTrackingNumber(
+      getQueryValue(req, "waybillNo") || getQueryValue(req, "trackingNumber"),
+    );
+
+    let pickupRequest = null;
+    if (Number.isInteger(pickupRequestId) && pickupRequestId > 0) {
+      pickupRequest = await getPickupRequest(supabase, pickupRequestId);
+      if (!pickupRequest) {
+        return res.status(404).json(
+          makeErrorResponse({
+            error: "수거 요청을 찾을 수 없습니다.",
+            code: "PICKUP_NOT_FOUND",
+          }),
+        );
+      }
+    }
+
+    // 단건 직접 조회 (수거 요청 없이 운송장만) — DB 미반영, 기존 동작 유지.
+    if (!pickupRequest) {
+      if (!directWaybillNo) {
+        return res.status(400).json(
+          makeErrorResponse({
+            error: "waybillNo 또는 pickupRequestId의 운송장이 필요합니다.",
+            code: "MISSING_WAYBILL_NO",
+          }),
+        );
+      }
+
+      const tracking = await fetchCjTracking(directWaybillNo);
+      return res.status(200).json({ success: true, tracking, pickupRequest: null });
+    }
+
+    return res.status(200).json(await refreshPickupTracking(supabase, pickupRequest, {}, directWaybillNo));
   } catch (error) {
     const statusCode = error?.statusCode || 500;
     const code =

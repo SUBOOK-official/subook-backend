@@ -2,11 +2,14 @@
 
 2026-09-11 구현. 데이터 세트 `27962792746720705`, 비즈니스 `3645023768984708`.
 
-현재: migration 적용 및 매분 크론 실행 성공, 서버 전송 `enabled=false`, Vault 토큰 미등록.
-Meta 본인 확인·비즈니스 프로필 이메일 등록이 남아 있다.
-frontend의 서버 전환 구현은 `codex/meta-server-purchase`의 `a9fd41b`에 보관했다.
-main의 `41de3bd`는 운영 도메인 픽셀 가드만 포함하며 기존 구매 전송 경로를 유지한다.
-인증 후 아래 전환 순서를 완료하고 이 상태 기록을 갱신한다.
+현재: **2026-09-11 12:33 KST 운영 전환 완료.** Meta 본인 확인 및 비즈니스 프로필 이메일 인증을 마쳤고,
+Vault `meta_capi_access_token` 등록, 서버 전송 `enabled=true`, 매분 크론 성공을 확인했다.
+frontend `a9fd41b`를 main으로 통합·push한 뒤 배포했다.
+배포 `dpl_37zib4nnjpvgTjpZp1FFWxDr2y74`: **READY / production**, `https://subook.kr` 반영.
+
+연결 검증은 실제 `/store/2371` 조회의 상품 ID·발생 시각·기존 브라우저 event_id를 유지한
+ViewContent를 운영 `meta_purchase_http` 함수로 전송해 **HTTP 200 / events_received=1**로 확인했다.
+가짜 Purchase·테스트 주문·과거 구매 전송은 하지 않았다. 새 실제 결제의 outbox confirmed 확인은 아직 남아 있다.
 
 ## 전송 기준
 
@@ -21,7 +24,7 @@ main의 `41de3bd`는 운영 도메인 픽셀 가드만 포함하며 기존 구�
 ## 전환 순서 — 필수
 
 1. migration `20260910191535_meta_purchase_tracking.sql`을 적용한다. 기본 `enabled=false`이며 기존 주문 데이터는 변경하지 않는다.
-2. Meta 이벤트 관리자 → subook 데이터 → 설정 → 전환 API → 직접 통합 → **Dataset Quality API 없이 설정** → 액세스 토큰 만들기. 현재 비즈니스 프로필 이메일이 없으면 이메일 등록·인증부터 해야 한다. 계정 본인 확인은 계정 소유자가 수행한다.
+2. Meta 이벤트 관리자 → subook 데이터 → 설정 → 전환 API → 직접 통합 → **Dataset Quality API 없이 설정** → 액세스 토큰 만들기. 비즈니스 프로필 이메일이 없으면 이메일 등록·인증부터 해야 한다. 계정 본인 확인은 계정 소유자가 수행한다.
 3. 발급값을 Supabase Vault의 `meta_capi_access_token`에 저장한다. 토큰은 브라우저 소스, VITE 변수, Git, 명령줄, 로그, 이 문서에 넣지 않는다. 기존 게이트웨이를 삭제하거나 토큰 권한을 불필요하게 넓히지 않는다.
 4. 토큰과 서버 HTTP 연결을 검증한 후 `meta_tracking_config.enabled=true`로 전송을 켠다. 아직 새 체크아웃 문맥이 없으면 전송 대상은 없다.
 5. 새 public-web을 배포한다. **2~4가 완료되지 않은 상태에서 브라우저 Purchase를 제거한 버전을 먼저 배포하면 안 된다.**
@@ -74,6 +77,9 @@ where j.jobname='subook-meta-purchase-sweep' order by d.runid desc limit 10;
 
 - `tests/meta_purchase_tracking.sql`은 **BEGIN/ROLLBACK 트랜잭션 내에서만** 실행한다. HTTP 함수를 테스트 대역으로 바꾸므로 실제 Meta 이벤트를 보내지 않는다. 전일 상품 2370과 동의/미동의 회원 fixture가 있는 DB가 필요하다. 기존 회원은 읽기만 하며 합성 주문·토큰·함수 변경은 모두 롤백한다.
 - 권한, 입금 전 제외, 회원/비회원 소유권, 개발·과거 주문 제외, 카드 세션, 결제 후 문맥 복구, 동의별 해시, 동일 ID, 일시/영구 오류, 성공 payload 제거를 검증했다.
+- 최종 frontend 테스트208개·lint·public/admin build 통과. 운영 상품 → 비회원 주문서 진입, 카드/무통장 선택 화면과 콘솔 error 0을 확인했으며 주문 제출은 하지 않았다.
+- CAPI 토큰으로 픽셀 관리 정보 GET 조회는 Graph 100으로 실패했지만, 동일 데이터 세트의 실제 이벤트 POST는 성공했다. 관리 정보 조회 실패만으로 전송 토큰이 무효라고 단정하거나 권한을 넓히지 않는다. 토큰 검증용 실제 조회의 같은 event_id를 재사용했으며 새 Purchase를 만들어 검증하지 않았다.
+- 토큰은 로컬 일회용 등록 폼에서 TLS 인증서를 검증한 DB 연결과 SQL 매개변수로 Vault에 저장했다. DB 매개변수 로깅을 해당 트랜잭션에서 차단했고 비밀값을 파일·터미널·Git에 남기지 않았다. 등록 서버와 임시 브라우저 창은 종료했다.
 - [Meta 전환 API 사용](https://developers.facebook.com/documentation/ads-commerce/conversions-api/using-the-api/) — v26.0, 실제 event_time, events_received, 동일 ID 재시도. 테스트 코드가 붙은 이벤트도 측정에 영향을 줄 수 있으므로 가짜 Purchase를 보내지 않는다.
 - [Meta 고객 매개변수](https://developers.facebook.com/documentation/ads-commerce/conversions-api/parameters/customer-information-parameters) — 이메일·전화번호 정규화/해시 및 쿠키·IP·UA 규칙.
 - [Supabase HTTP](https://supabase.com/docs/guides/database/extensions/http), [HTTP 확장 헤더/타임아웃](https://github.com/pramsey/pgsql-http), [Supabase Vault](https://supabase.com/docs/guides/database/vault).

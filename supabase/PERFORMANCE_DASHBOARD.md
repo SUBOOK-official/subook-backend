@@ -92,11 +92,11 @@ Backend 원본 `api/admin/performance.js`, `api/_lib/performance.js`를 frontend
 
 배포 루트가 CommonJS이므로 헬퍼도 `.js`로 두어 Vercel 빌더가 함께 컴파일하도록 한다. `.mjs` 정적 import는 로컬 Node 24에서 작동해도 Vercel 런타임의 require 후킹에서 `ERR_REQUIRE_ESM`이 발생한다. 루트의 모듈 설정을 변경해 다른 API의 실행 방식을 바꾸지 않는다.
 
-2026-09-12 사용자가 **“조회 연동 설정과 배포까지 진행”**을 승인했다. GA4 설정 등록과 대시보드 집계 migration 운영 반영을 완료했다. Meta 조회 토큰 연결과 실제 운영 API 검증·배포를 이어서 진행한다.
+2026-09-12 사용자가 **“조회 연동 설정과 배포까지 진행”**을 승인했다. GA4 설정 등록과 대시보드 집계 migration 운영 반영, 양 repo commit/push 및 운영 배포를 완료했다. 주문 DB와 GA4 core·두 퍼널이 실제 관리자 세션에서 정상 응답한다. Meta 조회 토큰은 Meta의 추가 이메일 인증 단계에 있다.
 
 기본 작업 폴더의 dry-run에는 기존 미추적 파일 `20260905031459_fix_create_order_reserved_check_ignore_refunded_items.sql`이 함께 잡혔다. 이 결제 수정은 이번 작업에 포함하지 않는다. 추적 중인 migration과 새 `20260912093504_admin_performance_report.sql`만 복사한 독립 workdir에서 dry-run을 수행해 **새 대시보드 함수 1개만 적용 대상으로 표시되는 것**을 확인하고 push했다. migration list의 local/remote 일치를 확인했다. 무관한 파일을 포함하려고 `--include-all`을 사용하지 않는다.
 
-승인 후: 조회 계정/토큰 준비 → Vercel production에 비밀 변수 추가 → 새 migration만 dry-run 확인 후 push → 실제 GA4/Meta 결과와 콘솔 대조 → 각 repo 검증/commit/push → 루트 `npm run deploy:admin` → READY/production 확인. 사용자용 앱 변경은 없으므로 public 배포는 필요 없다.
+배포는 루트 `npm run deploy:admin`으로 수행한다. 사용자용 앱 변경은 없으므로 public 배포는 필요 없다. 2026-09-12 배포 `dpl_2b9gpiEoStaKpCj8WJL7rEaFgDyz`의 READY/production과 `admin.subook.kr` 연결을 확인했다.
 
 ## 검증
 
@@ -104,5 +104,7 @@ Backend 원본 `api/admin/performance.js`, `api/_lib/performance.js`를 frontend
 - SQL: `tests/performance_dashboard.sql`의 주입 지점에 migration 본문(begin/commit 제외, 함수의 public 참조를 performance_test로 변경)을 삽입한 후 **전체 트랜잭션을 rollback**한다. 전용 테스트 스키마만 사용하고 운영 주문/트리거에 쓰지 않는다.
 - 전체 frontend lint, admin 변경 파일 별도 lint, admin/public build, 기존 public test 215개.
 - 로컬 브라우저에서 현재 운영 DB의 임시 함수 집계를 읽어 기본 7일·오늘·커스텀 기간·일별 표를 검증한 뒤 임시 함수는 rollback했다. 승인 후 정식 migration만 별도로 반영했다.
-- 외부 실제 계정은 연결 전이므로 API 호출은 응답 fixture로 검증. 브라우저 fixture는 명시적으로 예시 데이터임을 표시하고 배포에 포함하지 않는다.
-- 결과: 새 JS 테스트 16개·SQL assertion 전체·기존 public 테스트 215개·lint·양 앱 build 통과. 390px 브라우저에서 가로 넘침 없음, 개발 페이지 JS 오류 없음. 실제 외부 API 계정 연동과 운영 배포 확인은 이어서 수행한다.
+- 외부 API의 실패·0·중복 구매 action·페이지 처리 등은 fixture로 검증한다. 브라우저 fixture는 명시적으로 예시 데이터임을 표시하고 배포에 포함하지 않는다.
+- 결과: 새 JS 테스트 17개·SQL assertion 전체·기존 public 테스트 215개·lint·양 앱 build 통과. 390px 브라우저에서 가로 넘침 없음, 개발 페이지 JS 오류 없음. CommonJS로 컴파일한 실제 API의 로드·비인증 401도 검증했다.
+- 운영 확인(2026-09-12 19:58 KST, 9/6–9/12): DB 매출 2,756,550원/순매출 2,627,050원/64주문, GA4 기간 방문자 7,204명/구매전환율 0.64%, 조회→담기 5,618→62명, 결제시작→구매 92→50명. 오늘 지표는 계속 변하며 GA4 처리 지연도 있다.
+- 운영 API 비인증 요청은 401 및 `private, no-store`, DB의 anon 실행 권한은 없음. 관리자 인증 후에만 외부 보고서를 조회한다. Meta 실제 조회와 최종 배포 상태는 토큰 등록 후 추가 확인한다.

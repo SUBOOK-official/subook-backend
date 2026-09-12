@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { parsePerformanceQuery, loadGaPerformance, loadMetaPerformance, optionalProvider } from "../_lib/performance.mjs";
+import { parsePerformanceQuery, loadGaPerformance, loadMetaPerformance, optionalProvider } from "../_lib/performance.js";
 
 async function authorize(token) {
   const url = process.env.SUPABASE_ADMIN_URL || process.env.VITE_SUPABASE_ADMIN_URL;

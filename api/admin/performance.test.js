@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { parsePerformanceQuery, summarizeMeta, loadMetaPerformance, loadGaPerformance, decodeFunnel, fetchReportJson, googleFederatedAccessToken } from "../_lib/performance.mjs";
+import { parsePerformanceQuery, summarizeMeta, loadMetaPerformance, loadGaPerformance, decodeFunnel, fetchReportJson, googleFederatedAccessToken } from "../_lib/performance.js";
 import { createPerformanceHandler } from "./performance.js";
 
 const range = parsePerformanceQuery({ from: "2026-09-06", to: "2026-09-12" }, new Date("2026-09-12T10:00Z"));
@@ -145,7 +145,7 @@ test("API denies anonymous/non-admin before provider calls and sanitizes failure
 });
 
 test("deployed copies match the backend sources", { skip: !existsSync(new URL("../../../frontend/apps/admin-web/api", import.meta.url)) }, () => {
-  for (const file of ["admin/performance.js", "_lib/performance.mjs"]) {
+  for (const file of ["admin/performance.js", "_lib/performance.js"]) {
     assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), readFileSync(new URL(`../../../frontend/apps/admin-web/api/${file}`, import.meta.url), "utf8"));
   }
 });

@@ -1,6 +1,9 @@
 import { createSign, createHash } from "node:crypto";
 import { getVercelOidcToken } from "@vercel/oidc";
 
+// Vercel 배포 루트는 CommonJS이므로 .js 확장자로 함께 컴파일한다.
+// .mjs는 운영 런타임의 require 후킹에서 ERR_REQUIRE_ESM이 발생한다.
+
 const DAY_MS = 86_400_000;
 const CACHE_MS = 15 * 60_000;
 const cache = new Map();

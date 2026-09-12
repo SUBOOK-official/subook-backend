@@ -88,7 +88,9 @@
 
 `api/admin/performance.js`가 매 요청의 관리자 인증을 확인한 뒤 외부 API를 조회한다. 응답은 `private, no-store`. 서버 인스턴스 내부에서 최대 15분/32개 결과 캐시와 동일 요청 합치기를 사용한다. 서버 재시작 시 사라지는 캐시이며 별도 스케줄러나 데이터 적재 테이블은 없다. 새로고침은 DB를 다시 읽고 외부 지표는 유효한 캐시를 사용할 수 있다. 외부 1회 요청 12초, 일시 오류만 1회 재시도, 출처별 전체 40초 제한이다.
 
-Backend 원본 `api/admin/performance.js`, `api/_lib/performance.mjs`를 frontend `apps/admin-web/api/`의 동일 경로에 동기화한다. 서버 의존성 `@vercel/oidc` 3.8.7은 양쪽 package.json과 admin `vercel.root-package.json`에 포함한다. 모든 인증정보는 서버 전용이며 `VITE_` 이름으로 저장하지 않는다. 클라이언트는 shared-supabase 경유 RPC와 인증된 admin API만 호출한다.
+Backend 원본 `api/admin/performance.js`, `api/_lib/performance.js`를 frontend `apps/admin-web/api/`의 동일 경로에 동기화한다. 서버 의존성 `@vercel/oidc` 3.8.7은 양쪽 package.json과 admin `vercel.root-package.json`에 포함한다. 모든 인증정보는 서버 전용이며 `VITE_` 이름으로 저장하지 않는다. 클라이언트는 shared-supabase 경유 RPC와 인증된 admin API만 호출한다.
+
+배포 루트가 CommonJS이므로 헬퍼도 `.js`로 두어 Vercel 빌더가 함께 컴파일하도록 한다. `.mjs` 정적 import는 로컬 Node 24에서 작동해도 Vercel 런타임의 require 후킹에서 `ERR_REQUIRE_ESM`이 발생한다. 루트의 모듈 설정을 변경해 다른 API의 실행 방식을 바꾸지 않는다.
 
 2026-09-12 사용자가 **“조회 연동 설정과 배포까지 진행”**을 승인했다. GA4 설정 등록과 대시보드 집계 migration 운영 반영을 완료했다. Meta 조회 토큰 연결과 실제 운영 API 검증·배포를 이어서 진행한다.
 

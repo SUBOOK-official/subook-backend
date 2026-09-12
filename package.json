@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@google/genai": "^1.43.0",
-    "@supabase/supabase-js": "^2.49.8"
+    "@supabase/supabase-js": "^2.49.8",
+    "@vercel/oidc": "3.8.7"
   }
 }

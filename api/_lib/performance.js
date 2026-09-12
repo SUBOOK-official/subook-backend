@@ -35,9 +35,11 @@ export async function fetchReportJson(url, options = {}, fetcher = fetch) {
       const body = await response.json();
       if (response.ok && !body.error) return body;
       const retryable = response.status === 429 || response.status >= 500 || body.error?.is_transient === true;
-      if (!retryable || attempt === 1) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), { noRetry: true });
+      if (!retryable || attempt === 1) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), { noRetry: true, httpStatus: response.status });
     } catch (error) {
-      if (attempt === 1 || error.noRetry) throw new Error("PROVIDER_REQUEST_FAILED");
+      if (attempt === 1 || error.noRetry) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), {
+        httpStatus: Number.isInteger(error.httpStatus) ? error.httpStatus : undefined,
+      });
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -127,7 +129,7 @@ export function decodeGaRows(report) {
   if (!report || !Array.isArray(report.metricHeaders)) throw new Error("INVALID_GA_REPORT");
   return (report.rows ?? []).map((row) => {
     if (row.metricValues?.length !== report.metricHeaders.length || row.dimensionValues?.length !== (report.dimensionHeaders?.length ?? 0)
-      || row.metricValues.some((item) => item.value == null || !Number.isFinite(Number(item.value)))) throw new Error("INVALID_GA_ROW");
+      || row.metricValues.some((item) => item?.value == null || !Number.isFinite(Number(item.value)))) throw new Error("INVALID_GA_ROW");
     return Object.fromEntries([
     ...(report.dimensionHeaders ?? []).map((header, index) => [header.name, row.dimensionValues?.[index]?.value]),
     ...report.metricHeaders.map((header, index) => [header.name, number(row.metricValues?.[index]?.value)]),
@@ -136,14 +138,21 @@ export function decodeGaRows(report) {
 }
 
 export function decodeFunnel(report) {
-  const rows = decodeGaRows(report.funnelTable);
+  const subreport = report.funnelVisualization || report.funnelTable;
+  const usersIndex = subreport?.metricHeaders?.findIndex((header) => header.name === "activeUsers");
+  if (usersIndex == null || usersIndex < 0) throw new Error("INVALID_FUNNEL_USERS");
+  // 단계별 사용자만 필요하다. 마지막 단계의 완료율 등 사용하지 않는 파생 지표는
+  // 정의되지 않을 수 있으므로 코호트 인원 검증에 포함하지 않는다.
+  const rows = decodeGaRows({ ...subreport, metricHeaders: [{ name: "activeUsers" }],
+    rows: subreport.rows?.map((row) => ({ ...row, metricValues: [row.metricValues?.[usersIndex]] })) });
   const first = rows.find((row) => /^1\. /.test(row.funnelStepName));
   const second = rows.find((row) => /^2\. /.test(row.funnelStepName));
   if (rows.length && !first) throw new Error("INVALID_FUNNEL_STEPS");
   const entered = first?.activeUsers ?? 0;
   const completed = second?.activeUsers ?? 0;
+  if (entered < 0 || completed < 0 || completed > entered) throw new Error("INVALID_FUNNEL_USERS");
   return { entered, completed, rate: ratio(completed, entered, 100),
-    sampled: (report.funnelTable.metadata?.samplingMetadatas?.length ?? 0) > 0 };
+    sampled: (subreport.metadata?.samplingMetadatas?.length ?? 0) > 0 };
 }
 
 export async function loadGaPerformance(range, env = process.env, fetcher = fetch, getOidcToken = getVercelOidcToken) {
@@ -184,7 +193,13 @@ export async function loadGaPerformance(range, env = process.env, fetcher = fetc
     const funnels = await Promise.allSettled(periods.flatMap((period) => pairs.map((events) => call("v1alpha", "runFunnelReport", {
       dateRanges: [period], funnel: { isOpenFunnel: false, steps: events.map((eventName) => ({ name: eventName,
         filterExpression: { funnelEventFilter: { eventName } } })) },
-    }).then(decodeFunnel))));
+    }).then(decodeFunnel).catch((error) => {
+      // 응답 원문·인증정보 대신 진단에 필요한 고정 오류 코드와 HTTP 상태만 기록한다.
+      const allowed = ["PROVIDER_REQUEST_FAILED", "INVALID_GA_REPORT", "INVALID_GA_ROW", "INVALID_FUNNEL_STEPS", "INVALID_FUNNEL_USERS"];
+      console.warn("performance_ga_funnel_failed", { reason: allowed.includes(error.message) ? error.message : "INVALID_FUNNEL_RESPONSE",
+        httpStatus: Number.isInteger(error.httpStatus) ? error.httpStatus : undefined });
+      throw error;
+    }))));
     for (const [index, period] of ["current", "previous"].entries()) {
       const cart = funnels[index * 2], checkout = funnels[index * 2 + 1];
       result[period].cartFunnel = cart.status === "fulfilled" ? cart.value : null;

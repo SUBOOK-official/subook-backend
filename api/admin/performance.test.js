@@ -62,6 +62,18 @@ test("funnel uses sequential same-cohort users and handles an empty funnel", () 
   assert.equal(decodeFunnel({ funnelTable: gaReport(["funnelStepName"], ["activeUsers"], []) }).rate, null);
 });
 
+test("funnel tolerates unavailable derived rates while validating the actual user cohort", () => {
+  const table = gaReport(["funnelStepName"], ["activeUsers", "funnelStepCompletionRate"], [
+    [["1. start"], [10, 0.3]], [["2. finish"], [3, "NaN"]],
+  ]);
+  assert.equal(decodeFunnel({ funnelTable: table }).rate, 30);
+  const visualization = gaReport(["funnelStepName"], ["activeUsers"], [[["1. start"], [8]], [["2. finish"], [2]]]);
+  visualization.metadata = { samplingMetadatas: [{ samplesReadCount: "80", samplingSpaceSize: "100" }] };
+  assert.deepEqual(decodeFunnel({ funnelVisualization: visualization, funnelTable: table }), { entered: 8, completed: 2, rate: 25, sampled: true });
+  assert.throws(() => decodeFunnel({ funnelTable: gaReport(["funnelStepName"], ["activeUsers"], [[["1. start"], ["NaN"]]]) }), /INVALID/);
+  assert.throws(() => decodeFunnel({ funnelTable: gaReport(["funnelStepName"], ["activeUsers"], [[["1. start"], [2]], [["2. finish"], [3]]]) }), /INVALID/);
+});
+
 test("GA period unique users are not summed from daily rows; one funnel failure preserves traffic", async () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const credentials = JSON.stringify({ type: "service_account", client_email: "fixture@example.invalid", private_key: privateKey.export({ type: "pkcs8", format: "pem" }) });

@@ -69,7 +69,7 @@
 
 2026-09-12 공식 광고 관리자에서 현재 집행 중인 `9/9 수북X전일 캠페인`이 **수북 subook / 1507168001446517** 계정에 있음을 확인했다. 초기 조사·승인 질문의 `1667285971026064`는 이전 계정이므로 현재 집행 계정으로 정정했으며 사용자에게 설명했다. 화면에 연결된 계정명과 ID를 표시한다.
 
-비즈니스 `3645023768984708`에 `수북 성과 대시보드` 앱(`4553544514967620`)과 Employee 시스템 사용자 `SubookReader`(`61593967875660`)를 생성했다. 현재 광고 계정에는 **성과 보기**, 조회 앱에는 **앱 테스트**만 할당했다. 토큰 발급 선택은 만료 없음·`ads_read`만이다. Meta의 추가 이메일 인증 후 발급·실제 조회 검증을 이어서 진행한다.
+비즈니스 `3645023768984708`에 `수북 성과 대시보드` 앱(`4553544514967620`)과 Employee 시스템 사용자 `SubookReader`(`61593967875660`)를 생성했다. 현재 광고 계정에는 **성과 보기**, 조회 앱에는 **앱 테스트**만 할당했다. 2026-09-13 추가 이메일 인증 후 만료 없음·`ads_read` 토큰 발급을 완료했다. 실제 권한 응답은 `ads_read`, 기본 `public_profile`뿐이며 광고 수정 권한은 없다. 토큰은 Vercel production의 sensitive 환경 변수로, 계정 ID는 서버 설정으로 등록했다. 운영 관리자 세션에서 실제 광고 보고서 조회를 확인했다.
 
 기존 Vault의 `meta_capi_access_token`은 전환 이벤트 전송 목적으로 보관된 토큰이다. 광고 조회 권한이 있다는 가정으로 재사용하지 않는다. 광고 생성/수정 권한을 요청하지 않는다.
 
@@ -92,11 +92,11 @@ Backend 원본 `api/admin/performance.js`, `api/_lib/performance.js`를 frontend
 
 배포 루트가 CommonJS이므로 헬퍼도 `.js`로 두어 Vercel 빌더가 함께 컴파일하도록 한다. `.mjs` 정적 import는 로컬 Node 24에서 작동해도 Vercel 런타임의 require 후킹에서 `ERR_REQUIRE_ESM`이 발생한다. 루트의 모듈 설정을 변경해 다른 API의 실행 방식을 바꾸지 않는다.
 
-2026-09-12 사용자가 **“조회 연동 설정과 배포까지 진행”**을 승인했다. GA4 설정 등록과 대시보드 집계 migration 운영 반영, 양 repo commit/push 및 운영 배포를 완료했다. 주문 DB와 GA4 core·두 퍼널이 실제 관리자 세션에서 정상 응답한다. Meta 조회 토큰은 Meta의 추가 이메일 인증 단계에 있다.
+2026-09-12 사용자가 **“조회 연동 설정과 배포까지 진행”**을 승인했다. GA4 설정 등록과 대시보드 집계 migration 운영 반영, 양 repo commit/push 및 운영 배포를 완료했다. 2026-09-13 Meta 서버 설정까지 반영해 주문 DB, GA4 core·두 퍼널, Meta 광고가 실제 관리자 세션에서 모두 정상 응답한다.
 
 기본 작업 폴더의 dry-run에는 기존 미추적 파일 `20260905031459_fix_create_order_reserved_check_ignore_refunded_items.sql`이 함께 잡혔다. 이 결제 수정은 이번 작업에 포함하지 않는다. 추적 중인 migration과 새 `20260912093504_admin_performance_report.sql`만 복사한 독립 workdir에서 dry-run을 수행해 **새 대시보드 함수 1개만 적용 대상으로 표시되는 것**을 확인하고 push했다. migration list의 local/remote 일치를 확인했다. 무관한 파일을 포함하려고 `--include-all`을 사용하지 않는다.
 
-배포는 루트 `npm run deploy:admin`으로 수행한다. 사용자용 앱 변경은 없으므로 public 배포는 필요 없다. 2026-09-12 배포 `dpl_2b9gpiEoStaKpCj8WJL7rEaFgDyz`의 READY/production과 `admin.subook.kr` 연결을 확인했다.
+배포는 루트 `npm run deploy:admin`으로 수행한다. 사용자용 앱 변경은 없으므로 public 배포는 필요 없다. Meta 설정을 반영한 2026-09-13 배포 `dpl_BfM9QApsJWP1AZsEUygx5x5vLn4u`의 READY/production과 `admin.subook.kr` 연결을 확인했다. 배포한 frontend 코드는 `8273827`이다.
 
 ## 검증
 
@@ -107,4 +107,5 @@ Backend 원본 `api/admin/performance.js`, `api/_lib/performance.js`를 frontend
 - 외부 API의 실패·0·중복 구매 action·페이지 처리 등은 fixture로 검증한다. 브라우저 fixture는 명시적으로 예시 데이터임을 표시하고 배포에 포함하지 않는다.
 - 결과: 새 JS 테스트 17개·SQL assertion 전체·기존 public 테스트 215개·lint·양 앱 build 통과. 390px 브라우저에서 가로 넘침 없음, 개발 페이지 JS 오류 없음. CommonJS로 컴파일한 실제 API의 로드·비인증 401도 검증했다.
 - 운영 확인(2026-09-12 19:58 KST, 9/6–9/12): DB 매출 2,756,550원/순매출 2,627,050원/64주문, GA4 기간 방문자 7,204명/구매전환율 0.64%, 조회→담기 5,618→62명, 결제시작→구매 92→50명. 오늘 지표는 계속 변하며 GA4 처리 지연도 있다.
-- 운영 API 비인증 요청은 401 및 `private, no-store`, DB의 anon 실행 권한은 없음. 관리자 인증 후에만 외부 보고서를 조회한다. Meta 실제 조회와 최종 배포 상태는 토큰 등록 후 추가 확인한다.
+- 운영 API 비인증 요청은 401 및 `private, no-store`, DB의 anon 실행 권한은 없음. 관리자 인증 후에만 외부 보고서를 조회한다.
+- Meta 실연동 확인(2026-09-13 01:22 KST, 9/6–9/12): 광고비 515,534원, 기여 구매 8건, 기여 매출 458,857원, CPA 64,442원, ROAS 89.01%, 노출 33,455회, 클릭 1,425회. 공식 광고 관리자에서도 동일 기간 구매 8건·광고비·CPA·노출이 일치했다. 캠페인 1개 → 광고세트 2개 → 선택 광고세트의 광고 6개를 조회하고 상세 필터 전환에도 전체 계정 KPI가 유지됨을 확인했다.

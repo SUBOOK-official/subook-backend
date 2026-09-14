@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { processReturnRefund } from "../_lib/returnRefund.js";
 
 // 관리자 환불 — 품목별 부분환불 지원 (2026-08-01) + PG 프로바이더(나이스페이/토스) 분기.
 //
@@ -58,7 +59,7 @@ function parseBearerToken(authHeader) {
 }
 
 function makeErrorResponse({ error, code, detail }) {
-  const payload = { error: String(error || "Request failed."), code: String(code || "UNKNOWN") };
+  const payload = { error: String(error || "Request failed."), code: typeof code === "number" ? code : String(code || "UNKNOWN") };
   if (detail) payload.detail = String(detail);
   return payload;
 }
@@ -319,6 +320,36 @@ async function cancelPgPayment({ order, reason, amount, itemIds }) {
   });
 }
 
+// 공식 거래조회 응답을 금액 대사용으로 정규화한다. 조회는 1회 재시도, 취소는 재전송하지 않는다.
+async function getReturnPayment(order) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      if ((order.pg_provider || "toss") === "nicepay") {
+        const body = await getNicepayPayment(order.payment_key);
+        if (body?.resultCode === "0000" && body.tid === order.payment_key
+          && ["paid", "partialCancelled", "cancelled"].includes(body.status)
+          && Number.isInteger(body.balanceAmt) && Number.isInteger(body.amount)) {
+          return { balance: body.balanceAmt, total: body.amount,
+            cancels: (body.cancels ?? []).map(c => ({ amount: Number(c.amount), at: c.cancelledAt, done: true })) };
+        }
+      } else {
+        const secretKey = process.env.TOSS_SECRET_KEY;
+        if (!secretKey) return null;
+        const response = await fetchWithTimeout(`${TOSS_CANCEL_BASE}/${encodeURIComponent(order.payment_key)}`, {
+          headers: { Authorization: `Basic ${Buffer.from(`${secretKey}:`).toString("base64")}` },
+        });
+        const body = await response.json();
+        if (response.ok && body.paymentKey === order.payment_key && ["DONE", "CANCELED", "PARTIAL_CANCELED"].includes(body.status)
+          && Number.isInteger(body.balanceAmount) && Number.isInteger(body.totalAmount)) {
+          return { balance: body.balanceAmount, total: body.totalAmount,
+            cancels: (body.cancels ?? []).map(c => ({ amount: Number(c.cancelAmount), at: c.canceledAt, done: c.cancelStatus === "DONE" })) };
+        }
+      }
+    } catch { /* 읽기 전용 조회만 한 번 재시도한다. */ }
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -338,9 +369,23 @@ export default async function handler(req, res) {
     return res.status(status).json(makeErrorResponse({ error: err.message, code: err.message }));
   }
 
-  const { orderId, reason, acknowledgeRecovery, itemIds, refundAmount, restock } = req.body || {};
+  const { orderId, reason, acknowledgeRecovery, itemIds, refundAmount, restock, returnId, action, transferReference } = req.body || {};
+  if (returnId) {
+    if (typeof returnId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(returnId)) {
+      return res.status(400).json(makeErrorResponse({ error: "반품 번호가 올바르지 않습니다.", code: 400, detail: "INVALID_RETURN_ID" }));
+    }
+    const result = await processReturnRefund({ supabase, returnId, action, transferReference, acknowledgeRecovery,
+      cancelPayment: cancelPgPayment, getPayment: getReturnPayment });
+    return res.status(result.status).json(result.body);
+  }
   if (!orderId) {
     return res.status(400).json(makeErrorResponse({ error: "orderId is required", code: "MISSING_ORDER_ID" }));
+  }
+
+  // 구버전 화면도 실물 도착·검수 절차를 우회해서 PG부터 취소할 수 없다.
+  const legacyGuard = await supabase.rpc("admin_assert_legacy_refund_allowed", { p_order_id: orderId });
+  if (legacyGuard.error) {
+    return res.status(409).json(makeErrorResponse({ error: legacyGuard.error.message, code: 409, detail: "RETURN_INSPECTION_REQUIRED" }));
   }
 
   // 주문 조회 — 결제수단/프로바이더/환불 누계 확인 (admin RLS로 조회 가능)

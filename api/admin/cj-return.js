@@ -58,7 +58,7 @@ const ORDER_SELECT = `
 function makeErrorResponse({ error, code, detail }) {
   const payload = {
     error: String(error || "Request failed."),
-    code: String(code || "UNKNOWN"),
+    code: typeof code === "number" ? code : String(code || "UNKNOWN"),
   };
   if (detail) {
     payload.detail = String(detail);
@@ -429,7 +429,9 @@ function kstYmd(date = new Date()) {
 function buildGoodsArray(order) {
   const items = Array.isArray(order.order_items) ? order.order_items : [];
   const refunded = items.filter((item) => item.refunded_at);
-  const targets = refunded.length > 0 ? refunded : items;
+  const targets = order.active_return_item_ids?.length
+    ? items.filter(item => order.active_return_item_ids.includes(item.id))
+    : refunded.length > 0 ? refunded : items;
   if (targets.length > 0) {
     return targets.map((item, index) => ({
       MPCK_SEQ: String(index + 1),
@@ -651,6 +653,16 @@ async function getOrder(supabase, orderId) {
     throw error;
   }
 
+  if (!data) return data;
+  const returns = await supabase.from("order_return_cases").select("id,requested_at")
+    .eq("order_id", orderId).not("status", "in", "(refunded,cancelled)").maybeSingle();
+  if (returns.error) throw returns.error;
+  if (returns.data) {
+    const items = await supabase.from("order_return_items").select("order_item_id").eq("return_id", returns.data.id);
+    if (items.error) throw items.error;
+    data.active_return_item_ids = items.data.map(item => item.order_item_id);
+    data.active_return_requested_at = returns.data.requested_at;
+  }
   return data;
 }
 
@@ -663,6 +675,10 @@ function canRegisterReturn(order) {
 }
 
 async function handleRegister({ supabase, order, token, cfg }) {
+  if (order.return_tracking_number && order.active_return_requested_at && order.return_registered_at
+    && new Date(order.return_registered_at) < new Date(order.active_return_requested_at)) {
+    return { status: 409, body: makeErrorResponse({ error: "이전 반품의 수거 접수 기록이 남아있습니다. 기존 수거 상태와 취소 가능 여부를 확인한 뒤 재접수하거나 구매자 직접 발송을 이용해주세요.", code: 409, detail: "PREVIOUS_RETURN_PICKUP" }) };
+  }
   if (order.return_tracking_number) {
     return {
       status: 200,

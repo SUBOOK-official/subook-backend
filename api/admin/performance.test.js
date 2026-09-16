@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { parsePerformanceQuery, summarizeMeta, loadMetaPerformance, loadGaPerformance, decodeFunnel, fetchReportJson, googleFederatedAccessToken } from "../_lib/performance.js";
+import { parsePerformanceQuery, summarizeMeta, loadMetaPerformance, loadGaPerformance, decodeFunnel, fetchReportJson, googleFederatedAccessToken, describeMetaFailure, optionalProvider } from "../_lib/performance.js";
 import { createPerformanceHandler } from "./performance.js";
 
 const range = parsePerformanceQuery({ from: "2026-09-06", to: "2026-09-12" }, new Date("2026-09-12T10:00Z"));
@@ -140,6 +140,30 @@ test("external read retries transient errors but not authorization failures", as
   assert.equal(calls, 2); calls = 0;
   await assert.rejects(() => fetchReportJson("https://fixture.invalid", {}, async () => { calls += 1; return response({ error: "secret" }, 401); }), /PROVIDER_REQUEST_FAILED/);
   assert.equal(calls, 1);
+});
+
+test("Meta API blocks preserve diagnostics and direct operators to developer account checks", async () => {
+  let calls = 0;
+  const result = await optionalProvider(() => loadMetaPerformance(range,
+    { META_AD_ACCOUNT_ID: "123", META_ADS_ACCESS_TOKEN: "test-account-block" },
+    async () => {
+      calls += 1;
+      return response({ error: { message: "(#200) API access blocked.", type: "OAuthException", code: 200, fbtrace_id: "fixture-trace" } }, 400);
+    }), "Meta");
+  assert.equal(calls, 1);
+  assert.equal(result.status, "error");
+  assert.equal(result.diagnostic.stage, "account");
+  assert.equal(result.diagnostic.code, 200);
+  assert.equal(result.diagnostic.traceId, "fixture-trace");
+  assert.match(result.message, /개발자 콘솔.*계정 확인/);
+  assert.equal(result.current, undefined);
+});
+
+test("Meta asset permission and expired token errors retain their distinct recovery advice", () => {
+  assert.match(describeMetaFailure({ providerCode: 200, providerMessage: "Permissions error" }), /광고 계정 권한/);
+  assert.match(describeMetaFailure({ providerCode: 200 }), /광고 계정 권한/);
+  assert.match(describeMetaFailure({ providerCode: 190, providerMessage: "API access blocked." }), /토큰.*만료/);
+  assert.equal(describeMetaFailure({ providerMessage: "API access blocked." }), null);
 });
 
 function mockRes() { return { headers: {}, statusCode: 200, setHeader(key, value) { this.headers[key] = value; }, status(code) { this.statusCode = code; return this; }, json(data) { this.body = data; return this; } }; }

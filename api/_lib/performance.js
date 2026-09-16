@@ -27,6 +27,22 @@ export function parsePerformanceQuery(query, now = new Date()) {
   return { from, to, previousFrom: shift(from, -days), previousTo: shift(from, -1), level, campaignId, adsetId };
 }
 
+// 응답 오류에서 진단용 코드와 민감 문자열을 가린 오류 문장만 추린다.
+export function providerErrorDetail(body) {
+  const error = body?.error;
+  if (!error || typeof error !== "object") return {};
+  const pick = (value, pattern) => (typeof value === "string" && pattern.test(value) ? value : undefined);
+  return {
+    providerCode: Number.isInteger(error.code) ? error.code : undefined,
+    providerSubcode: Number.isInteger(error.error_subcode) ? error.error_subcode : undefined,
+    providerType: pick(error.type, /^[A-Za-z_]{1,40}$/) ?? pick(error.status, /^[A-Z_]{1,40}$/),
+    traceId: pick(error.fbtrace_id, /^[A-Za-z0-9_-]{1,64}$/),
+    // 권한 오류는 문장에 빠진 권한 이름이 들어 있어 조치에 필요하다. 토큰처럼 긴 문자열은 가리고 길이를 제한한다.
+    providerMessage: typeof error.message === "string"
+      ? error.message.replace(/[A-Za-z0-9_\-.]{24,}/g, "[redacted]").slice(0, 200) : undefined,
+  };
+}
+
 // 응답/예외의 원문에는 토큰, 계정 정보가 섞일 수 있어 클라이언트나 로그에 전달하지 않는다.
 export async function fetchReportJson(url, options = {}, fetcher = fetch) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -35,10 +51,15 @@ export async function fetchReportJson(url, options = {}, fetcher = fetch) {
       const body = await response.json();
       if (response.ok && !body.error) return body;
       const retryable = response.status === 429 || response.status >= 500 || body.error?.is_transient === true;
-      if (!retryable || attempt === 1) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), { noRetry: true, httpStatus: response.status });
+      if (!retryable || attempt === 1) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), {
+        noRetry: true, httpStatus: response.status, ...providerErrorDetail(body) });
     } catch (error) {
       if (attempt === 1 || error.noRetry) throw Object.assign(new Error("PROVIDER_REQUEST_FAILED"), {
         httpStatus: Number.isInteger(error.httpStatus) ? error.httpStatus : undefined,
+        providerCode: error.providerCode, providerSubcode: error.providerSubcode, providerType: error.providerType, traceId: error.traceId,
+        providerMessage: error.providerMessage,
+        // 네트워크·시간 초과처럼 응답 자체가 없을 때 구분용 (TimeoutError, TypeError 등 이름만)
+        cause: error.noRetry ? undefined : String(error.name || "Error").slice(0, 40),
       });
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -243,7 +264,8 @@ export async function loadMetaPerformance(range, env = process.env, fetcher = fe
   const base = `https://graph.facebook.com/${version}/act_${account}`;
   const headers = { Authorization: `Bearer ${token}` };
   const identity = `${version}:${account}:${fingerprint(token)}`;
-  const accountInfo = await cached(`meta-info:${identity}`, () => fetchReportJson(`${base}?fields=name,currency,timezone_name`, { headers }, scopedFetch));
+  const accountInfo = await cached(`meta-info:${identity}`, () => fetchReportJson(`${base}?fields=name,currency,timezone_name`, { headers }, scopedFetch))
+    .catch((error) => { throw Object.assign(error, { stage: "account" }); });
   if (accountInfo.currency !== "KRW" || accountInfo.timezone_name !== "Asia/Seoul") throw new Error("META_TIMEZONE_CURRENCY_MISMATCH");
   async function insights(params) {
     const rows = [];
@@ -263,7 +285,8 @@ export async function loadMetaPerformance(range, env = process.env, fetcher = fe
   }
   const fields = "date_start,date_stop,spend,impressions,clicks,actions,action_values";
   const totals = await cached(`meta:${identity}:${range.from}:${range.to}`, async () => {
-    const rows = await insights({ fields, level: "account", time_increment: "1", time_range: JSON.stringify({ since: range.previousFrom, until: range.to }) });
+    const rows = await insights({ fields, level: "account", time_increment: "1", time_range: JSON.stringify({ since: range.previousFrom, until: range.to }) })
+      .catch((error) => { throw Object.assign(error, { stage: "insights" }); });
     const current = rows.filter((row) => row.date_start >= range.from && row.date_start <= range.to);
     return { status: "ready", account: { id: account, name: accountInfo.name || "" }, updatedAt: new Date().toISOString(), current: summarizeMeta(current),
       previous: summarizeMeta(rows.filter((row) => row.date_start < range.from && row.date_start >= range.previousFrom)),
@@ -279,16 +302,41 @@ export async function loadMetaPerformance(range, env = process.env, fetcher = fe
       return rows.map((row) => ({ id: row[`${range.level}_id`], name: row[`${range.level}_name`], ...summarizeMeta([row]) })).sort((a, b) => b.spend - a.spend);
     });
     return { ...totals, breakdownStatus: "ready", breakdown };
-  } catch {
+  } catch (error) {
+    console.warn("performance_meta_breakdown_failed", { level: range.level, httpStatus: error.httpStatus, code: error.providerCode, subcode: error.providerSubcode });
     return { ...totals, breakdownStatus: "error", breakdown: [] };
   }
 }
 
+// Meta Graph API 오류 코드 → 운영자가 바로 조치할 수 있는 안내.
+// https://developers.facebook.com/docs/graph-api/guides/error-handling
+// https://developers.facebook.com/docs/marketing-api/overview/rate-limiting
+export function describeMetaFailure(detail) {
+  const code = detail?.providerCode;
+  if (code === 190 || code === 102) return "Meta 조회 토큰이 만료되었거나 폐기되었습니다. 시스템 사용자 토큰을 다시 발급해주세요.";
+  // 같은 200 코드라도 API 자체 차단은 광고 자산의 조회 권한 부족과 조치가 다르다.
+  if (code === 200 && /\bAPI access blocked\b/i.test(detail?.providerMessage ?? "")) return "Meta가 API 접근을 차단했습니다. Meta 개발자 콘솔의 계정 확인 요청과 앱 제한 상태를 확인해주세요.";
+  if (code === 10 || (code >= 200 && code <= 299)) return "Meta 광고 계정 조회 권한이 없습니다. 비즈니스 설정의 광고 계정 권한을 확인해주세요.";
+  if ([4, 17, 32, 613].includes(code) || (code >= 80000 && code <= 80014)) return "Meta 조회 한도를 초과했습니다. 잠시 후 다시 시도해주세요.";
+  if (code === 100) return "Meta가 조회 요청 형식을 거부했습니다. API 변경 여부를 확인해야 합니다.";
+  return null;
+}
+
 export async function optionalProvider(loader, name) {
   try { return await loader(); } catch (error) {
-    return { status: "error", message: error.message === "META_TIMEZONE_CURRENCY_MISMATCH"
+    // 오류 원문 대신 고정 코드만 남긴다. 관리자 전용 응답이라 화면에서 원인 구분에 쓴다.
+    const allowed = ["PROVIDER_REQUEST_FAILED", "PROVIDER_DEADLINE", "INVALID_META_CONFIG", "INVALID_META_REPORT", "INVALID_META_CURSOR",
+      "META_REPORT_TOO_LARGE", "META_TIMEZONE_CURRENCY_MISMATCH", "GA_TIMEZONE_MISMATCH"];
+    const diagnostic = Object.fromEntries(Object.entries({
+      reason: allowed.includes(error.message) ? error.message : "UNEXPECTED", stage: error.stage, httpStatus: error.httpStatus,
+      code: error.providerCode, subcode: error.providerSubcode, type: error.providerType, traceId: error.traceId, cause: error.cause,
+      detail: error.providerMessage,
+    }).filter(([, value]) => value !== undefined));
+    console.warn(`performance_${name.toLowerCase()}_failed`, diagnostic);
+    const metaMessage = name === "Meta" ? describeMetaFailure(error) : null;
+    return { status: "error", diagnostic, message: error.message === "META_TIMEZONE_CURRENCY_MISMATCH"
       ? "Meta 광고 계정의 통화(KRW)·시간대(서울)를 확인해주세요."
       : error.message === "GA_TIMEZONE_MISMATCH" ? "GA4 속성의 시간대가 서울인지 확인해주세요."
-      : `${name} 데이터를 불러오지 못했습니다. 연결 권한과 토큰 상태를 확인해주세요.` };
+      : metaMessage ?? `${name} 데이터를 불러오지 못했습니다. 연결 권한과 토큰 상태를 확인해주세요.` };
   }
 }

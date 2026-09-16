@@ -74,6 +74,7 @@ before(async () => {
   await db.exec(`create trigger trg_orders_sync_points after update of status on orders for each row execute function sync_points_on_order_status();
     create trigger trg_release_books_on_order_cancel after update of status on orders for each row execute function release_books_on_order_cancel();`);
   await db.exec(await readFile(new URL("../supabase/migrations/20260914080709_return_inspection_before_refund.sql",import.meta.url),"utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20260916034948_add_no_return_refund_flow.sql",import.meta.url),"utf8"));
 });
 after(async () => { await db.close(); });
 
@@ -111,6 +112,41 @@ test("무료배송·하자·발송 전 취소·쿠폰 적용 주문의 실제 �
     const attempt=await claim(id); await rpc("admin_complete_return_refund",[id,attempt.token]);
     if (scenario.coupon) assert.equal((await query("select status from member_coupons where id=$1",[order.id]))[0].status,"available");
   }
+});
+
+test("배송완료·운송장 주문도 미발송 누락은 회수 없이 즉시 전액 환불 승인",async()=>{
+  const order=await fixture({total:18000,prices:[7500,7500]});
+  await query("update orders set tracking_number='540000000000' where id=$1",[order.id]);
+  const prepared=await rpc("admin_prepare_no_return_refund",[
+    order.id,order.ids,"실제 포장 누락으로 구매자에게 전달되지 않음",true,null,null,
+  ]);
+  assert.equal(prepared.requires_return,false);
+  assert.equal(prepared.status,"approved");
+  assert.equal(prepared.refund_amount,18000);
+  assert.equal(prepared.shipping_deduction,0);
+  const stored=(await query("select status,requires_return,received_at,refund_amount from order_return_cases where id=$1",[prepared.return_id]))[0];
+  assert.equal(stored.status,"approved");
+  assert.equal(stored.requires_return,false);
+  assert.equal(stored.received_at,null);
+  assert.equal(stored.refund_amount,18000);
+  const attempt=await claim(prepared.return_id);
+  const completion=await rpc("admin_complete_return_refund",[prepared.return_id,attempt.token]);
+  assert.equal(completion.refund_amount,18000);
+  assert.ok((await query("select status from books where id=any($1)",[order.ids])).every(row=>row.status==="on_sale"));
+});
+
+test("일부 미발송 누락은 회수비 0원과 수동 금액 근거를 강제",async()=>{
+  const order=await fixture({total:18000,prices:[7500,7500]});
+  await assert.rejects(rpc("admin_prepare_no_return_refund",[
+    order.id,[order.ids[0]],"한 권만 포장 누락으로 미배송",false,null,null,
+  ]),/계산 근거/);
+  assert.equal((await query("select count(*)::int n from order_return_cases where order_id=$1",[order.id]))[0].n,0);
+  const prepared=await rpc("admin_prepare_no_return_refund",[
+    order.id,[order.ids[0]],"한 권만 포장 누락으로 미배송",false,7500,"누락된 선택 품목 결제액 전액 환불",
+  ]);
+  assert.equal(prepared.refund_amount,7500);
+  assert.equal(prepared.shipping_deduction,0);
+  assert.equal((await query("select requires_return from order_return_cases where id=$1",[prepared.return_id]))[0].requires_return,false);
 });
 
 test("일부 반품은 직접 계산 필수, 선택 품목만 환불·정산 취소, 다음 반품과 분리",async()=>{
@@ -183,6 +219,7 @@ test("RLS: 타 구매자 진행·내부 메모·토큰 비노출, 비관리자 �
   assert.ok(own.every(row=>!Object.hasOwn(row,"claim_token")&&!Object.hasOwn(row,"inspection_note")));
   await assert.rejects(rpc("admin_get_order_returns",[order.id]),/Admin access/);
   await assert.rejects(rpc("admin_receive_order_return",[id,order.ids]),/Admin access/);
+  await assert.rejects(rpc("admin_prepare_no_return_refund",[order.id,order.ids,"미발송 확인 완료",false,null,null]),/Admin access/);
   await assert.rejects(query("update order_return_cases set status='approved' where id=$1",[id]),/permission denied/);
   await assert.rejects(query("select subook_refund_internal.admin_refund_order_items($1,$2)",[order.id,order.ids]),/permission denied/);
   await db.exec(`select set_config('app.uid','00000000-0000-0000-0000-000000000003',false);`);

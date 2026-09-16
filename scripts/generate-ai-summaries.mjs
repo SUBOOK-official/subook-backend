@@ -1,10 +1,10 @@
-// 상품 AI 요약 배치 생성 — Gemini 2.5 Flash + 구글 검색 그라운딩.
+// 상품 AI 요약 배치 생성 — Gemini 3.8 Flash + 구글 검색 그라운딩.
 //
 // 설계 (2026-07-12):
 //   - 실시간이 아니라 사전 생성: products.ai_summary 에 저장, 상세 페이지는 읽기만.
 //   - 환각 대응: 검색으로 확인된 내용만 서술하도록 프롬프트 제한, 출처 URL을
 //     ai_summary_sources 에 저장(검수용). 생성 후 어드민에서 수정 가능(후속 작업).
-//   - 그라운딩 무료 쿼터(Gemini 2.5 Flash: 1,500회/일) 안에서 처리 — 818개 1일 커버.
+//   - 검색 그라운딩 사용량은 Gemini 3.x 프로젝트의 월간 쿼터를 공유한다.
 //
 // 사용법:
 //   node backend/scripts/generate-ai-summaries.mjs --limit 5        # 샘플 5개
@@ -47,15 +47,15 @@ const env = {
 };
 
 // GitHub Actions 등 파일 없는 환경에서는 process.env로 폴백 (로컬은 파일 우선)
-for (const key of ["VITE_SUPABASE_URL", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY", "GEMINI_API_KEY"]) {
+for (const key of ["VITE_SUPABASE_URL", "SUPABASE_PROJECT_REF", "SUPABASE_SERVICE_ROLE_KEY", "GEMINI_API_KEY", "GEMINI_SUMMARY_MODEL_ID"]) {
   if (!env[key] && process.env[key]) env[key] = process.env[key];
 }
 
 const SUPABASE_URL = env.VITE_SUPABASE_URL || (env.SUPABASE_PROJECT_REF ? `https://${env.SUPABASE_PROJECT_REF}.supabase.co` : null);
 const SERVICE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 const GEMINI_KEY = env.GEMINI_API_KEY;
-// gemini-2.5-flash는 신규 키에서 종료(404) — 3.5-flash 사용 (그라운딩 월 5,000회 무료 티어)
-const MODEL = "gemini-3.5-flash";
+// 자동 생성 API와 같은 모델·환경변수 사용. https://ai.google.dev/gemini-api/docs/latest-model
+const MODEL = env.GEMINI_SUMMARY_MODEL_ID || "gemini-3.8-flash";
 const DELAY_MS = 1500;
 
 if (!SUPABASE_URL || !SERVICE_KEY || !GEMINI_KEY) {
@@ -115,7 +115,10 @@ async function generateSummary(product) {
         // ⚠ camelCase 필수 — snake_case(google_search)는 조용히 무시되어 그라운딩이 안 붙음 (실측)
         tools: [{ googleSearch: {} }],
         // thinking 모델이라 사고 토큰이 예산을 잠식 → 여유 있게 (2048에선 앞/끝 잘림 실측)
-        generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+        generationConfig: {
+          thinkingConfig: { thinkingLevel: "LOW" },
+          maxOutputTokens: 4096,
+        },
       }),
     },
   );

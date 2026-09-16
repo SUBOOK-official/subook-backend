@@ -8,7 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 // ⚠️ 추출 프롬프트·매칭 로직은 tools/cover-scan-prototype(창고 실측용)과 동일하게 유지할 것.
 //    실측 CSV로 튜닝하면 양쪽에 같이 반영해야 결과가 일치한다.
 
-const MODEL_ID = process.env.GEMINI_COVER_SCAN_MODEL || "gemini-3.5-flash";
+const MODEL_ID = process.env.GEMINI_COVER_SCAN_MODEL || "gemini-3.8-flash";
 const GEMINI_TIMEOUT_MS = 60_000;
 const MAX_IMAGE_BASE64_LENGTH = 4_000_000; // Vercel 요청 본문 4.5MB 상한 고려
 const CATALOG_TTL_MS = 5 * 60_000;
@@ -117,7 +117,7 @@ function normalize(input) {
     String(input ?? "")
       .normalize("NFKC") // 로마 숫자 Ⅰ/Ⅱ 등은 NFKC가 라틴 i/ii로 풀어준다
       .toLowerCase()
-      .replace(/[\s\-_·.,:;()\[\]{}/\\'"!?+&*~｜|]/g, "")
+      .replace(/[\s\-_·.,:;()[\]{}/\\'"!?+&*~｜|]/g, "")
       // 한글 뒤에 붙은 로마자 과목 표기 → 숫자 ("지구과학i"→"지구과학1", "수학ii"→"수학2")
       .replace(/([가-힣])iv(?![a-z])/g, "$14")
       .replace(/([가-힣])iii(?![a-z])/g, "$13")
@@ -317,6 +317,7 @@ async function extractFromCover({ apiKey, imageBase64, mimeType }) {
             },
           ],
           generationConfig: {
+            thinkingConfig: { thinkingLevel: "LOW" },
             responseMimeType: "application/json",
             responseSchema: EXTRACTION_SCHEMA,
           },

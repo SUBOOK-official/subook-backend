@@ -295,11 +295,11 @@ async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }
 
 // ── 상품 AI 요약 단건 생성 (mode: "summary") ─────────────────────────
 // 생성 규칙은 backend/scripts/generate-ai-summaries.mjs의 검증된 로직 이식:
-// gemini-3.5-flash + 검색 그라운딩(camelCase googleSearch 필수 — snake_case는
+// gemini-3.8-flash + 검색 그라운딩(camelCase googleSearch 필수 — snake_case는
 // 조용히 무시됨), thinking 파트 제외, maxOutputTokens 4096(2048은 잘림),
 // finishReason!=="STOP" 실패 처리, 출처 0이면 1회 재시도, option 미포함(분권 앵커링 방지).
 
-const SUMMARY_MODEL_ID = process.env.GEMINI_SUMMARY_MODEL_ID || "gemini-3.5-flash";
+const SUMMARY_MODEL_ID = process.env.GEMINI_SUMMARY_MODEL_ID || "gemini-3.8-flash";
 const SUMMARY_ATTEMPT_TIMEOUT_MS = 45_000;
 
 function getSupabaseRestConfig() {
@@ -352,7 +352,12 @@ async function requestGeminiSummary({ apiKey, product }) {
           contents: [{ parts: [{ text: buildSummaryPrompt(product) }] }],
           // ⚠ camelCase 필수 — snake_case(google_search)는 조용히 무시됨 (실측)
           tools: [{ googleSearch: {} }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+          // Gemini 3.8 이전 지침에 따라 temperature 제거, 짧은 소개는 low 추론으로 생성.
+          // https://ai.google.dev/gemini-api/docs/latest-model
+          generationConfig: {
+            thinkingConfig: { thinkingLevel: "LOW" },
+            maxOutputTokens: 4096,
+          },
         }),
         signal: controller.signal,
       },

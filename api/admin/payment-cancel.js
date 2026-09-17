@@ -161,8 +161,9 @@ async function getNicepayPayment(tid) {
 // ⚠ 2033(부분취소 불가능금액): cancelAmt를 담으면 금액이 전액이어도 '부분취소'로
 //   라우팅되고, 매입 전(당일) 거래는 카드사가 부분취소를 거부한다(같은 실사례 —
 //   이 2033 거부가 orderId를 소진해 위 U112 상태를 만든 원흉).
-//   → 이번 취소로 잔액이 0이 되는 요청(fullCancel)은 cancelAmt 없이 전액취소 폼으로
-//   보낸다. 전액취소 전 거래조회로 "나이스페이 잔액 == 취소 예정액"을 확인해
+//   → 부분취소 이력이 없는 최초 전액취소(fullCancel)만 cancelAmt를 생략한다.
+//   부분취소 후 잔액 소진은 cancelAmt를 지정해야 한다(생략하면 2031 전체금액취소 불가).
+//   전액취소 전 거래조회로 "나이스페이 잔액 == 취소 예정액"을 확인해
 //   DB 드리프트(콘솔 부분취소 등)로 장부가 어긋나는 것을 막는다.
 async function cancelNicepayPayment({ tid, reason, cancelOrderId, cancelAmt, fullCancel = false, isRetry = false }) {
   const { clientKey, secretKey, apiBase } = getNicepayConfig();
@@ -305,9 +306,9 @@ async function cancelPgPayment({ order, reason, amount, itemIds }) {
       // 취소 요청별 고유 + 재시도엔 결정적: 환불 누계(이번 포함)를 접미사로 사용
       cancelOrderId: `${order.order_number}-R${refundedBefore + amount}`,
       cancelAmt: amount,
-      // 이번 취소로 주문 잔액이 0 → 전액취소 폼(cancelAmt 생략). 매입 전 거래는
-      // 부분취소가 카드사에서 거부(2033)되므로 전액 환불을 부분취소로 보내면 안 된다.
-      fullCancel: refundedBefore + amount === Number(order.total_amount ?? 0),
+      // 최초 전액취소만 금액 생략. 기존 부분취소가 있으면 남은 전액도 금액을 지정한다.
+      // 공식 규격: https://github.com/nicepayments/nicepay-manual/wiki/api-cancel
+      fullCancel: refundedBefore === 0 && amount === Number(order.total_amount ?? 0),
     });
   }
 

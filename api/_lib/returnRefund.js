@@ -9,13 +9,23 @@ export function matchesReturnRefund(attempt, payment) {
 }
 
 export async function processReturnRefund({ supabase, returnId, action = "execute", transferReference, acknowledgeRecovery, cancelPayment, getPayment }) {
-  if (!["execute", "reconcile"].includes(action)) return { status: 400, body: { error: "지원하지 않는 환불 작업입니다.", code: 400, reasonCode: "INVALID_ACTION" } };
-  const start = await supabase.rpc(action === "reconcile" ? "admin_get_return_refund_attempt" : "admin_claim_return_refund",
-    action === "reconcile" ? { p_return_id: returnId } : {
+  if (!["execute", "reconcile", "retry_remaining"].includes(action)) return { status: 400, body: { error: "지원하지 않는 환불 작업입니다.", code: 400, reasonCode: "INVALID_ACTION" } };
+  // 재시도도 기존 승인·실행 토큰을 유지한다. RPC의 관리자 검증·60초 대기 조건을 그대로 적용한다.
+  const start = await supabase.rpc(action === "execute" ? "admin_claim_return_refund" : "admin_get_return_refund_attempt",
+    action !== "execute" ? { p_return_id: returnId } : {
       p_return_id: returnId, p_transfer_reference: transferReference || null, p_acknowledge_recovery: acknowledgeRecovery === true,
     });
   if (start.error) return { status: 409, body: { error: start.error.message, code: 409, reasonCode: "RETURN_NOT_READY" } };
   const attempt = start.data;
+  // 금액 일부만 재시도하면 동시 요청에 의한 중복 환불 위험이 있다. 부분취소 후 남은 전액만 허용한다.
+  // 두 요청이 동시에 조회를 통과해도 동일 잔액 전액을 취소하므로 PG 잔액 검증이 중복 취소를 막는다.
+  if (action === "retry_remaining" && !(attempt.order.pg_provider === "nicepay" && attempt.order.payment_key
+    && Number(attempt.order.refunded_amount) > 0 && attempt.whole_order === true
+    && Number.isInteger(attempt.refund_amount) && attempt.refund_amount > 0
+    && attempt.refund_amount === attempt.remaining_before
+    && attempt.remaining_before === Number(attempt.order.total_amount) - Number(attempt.order.refunded_amount))) {
+    return { status: 409, body: { error: "나이스페이 부분취소 후 남은 결제금액 전액을 환불하는 건만 재시도할 수 있습니다.", code: 409, reasonCode: "RETRY_REMAINING_NOT_ALLOWED" } };
+  }
   const flag = async (message) => {
     try {
       await supabase.rpc("admin_flag_return_refund", { p_return_id: returnId, p_token: attempt.token, p_note: message });

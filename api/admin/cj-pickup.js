@@ -43,6 +43,7 @@ const PICKUP_SELECT = `
   pickup_memo,
   desired_pickup_date,
   box_count,
+  box_type_codes,
   expected_book_count,
   item_count,
   tracking_number,
@@ -251,9 +252,9 @@ function getCjConfig() {
     calDvCd: process.env.CJ_CAL_DV_CD || "1",
     frtDvCd: process.env.CJ_FRT_DV_CD || "03",
     cntrItemCd: process.env.CJ_CNTR_ITEM_CD || "01",
-    // BOX_TYPE_CD: 01=극소(3,000원)·02=소(3,500원)·03=중·04=대1·05=이형.
-    // 중고 교재는 극소(80cm/2kg 이하) 기본. (과거 '02=소'로 잘못 접수돼 500원 과청구 → 01로 수정)
-    boxTypeCd: process.env.CJ_BOX_TYPE_CD || "01",
+    // 수거 BOX_TYPE_CD는 신청에 저장된 박스별 규격만 사용한다.
+    // 규격 저장 이전 예약의 취소(CnclBook)에만 당시 env 기본값을 사용한다.
+    legacyCancelBoxTypeCd: process.env.CJ_BOX_TYPE_CD || "01",
     // 규격서: "반품(RCPT_DV='02') 진행 시 PRT_ST='01'(미출력) 기재" — 기사가 운송장
     // 출력·부착하는 회수 모델. (선출력 '02'는 배송(일반 접수)용 — cj-delivery 참조.)
     // env 이름도 CJ_PICKUP_PRT_ST로 분리 — cj-delivery의 CJ_PRT_ST와 상호 간섭 방지.
@@ -514,7 +515,13 @@ function boxCustUseNo(requestNumber, boxSeq) {
 // 예약접수(RegBook) 바디 구성. 발송인(SENDR)=셀러, 수취인(RCVR)=수북 입고센터.
 // ⚠ 멀티박스: CJ 운송장은 박스(개별 화물)당 1장 필요 — 박스마다 이 payload로 접수 1건씩
 //   나간다. BOX_QTY는 항상 1 (과거엔 box_count를 넣고 접수는 1건만 해서 송장이 모자랐음).
-function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, totalBoxes = 1 }) {
+export function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, totalBoxes = 1 }) {
+  assertPickupBoxTypes(pickupRequest.box_type_codes, totalBoxes);
+  if (!Number.isInteger(boxSeq) || boxSeq < 1 || boxSeq > totalBoxes) throw new Error("Invalid pickup box sequence");
+  return buildPickupPayload(pickupRequest, { token, invcNo, cfg, boxSeq, totalBoxes, boxTypeCd: pickupRequest.box_type_codes[boxSeq - 1] });
+}
+
+function buildPickupPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, totalBoxes = 1, boxTypeCd }) {
   const sender = splitPhone(pickupRequest.pickup_recipient_phone);
   const warehouse = splitPhone(cfg.warehousePhone);
   const custUseNo = boxCustUseNo(pickupRequest.request_number, boxSeq);
@@ -534,7 +541,7 @@ function buildRegBookPayload(pickupRequest, { token, invcNo, cfg, boxSeq = 1, to
     CAL_DV_CD: cfg.calDvCd,
     FRT_DV_CD: cfg.frtDvCd,
     CNTR_ITEM_CD: cfg.cntrItemCd,
-    BOX_TYPE_CD: cfg.boxTypeCd,
+    BOX_TYPE_CD: boxTypeCd,
     BOX_QTY: "1",
     FRT: "0",
     CUST_MGMT_DLCM_CD: cfg.custId,
@@ -598,9 +605,13 @@ function isCjDuplicateBooking(body) {
 // 박스별 CUST_USE_NO가 접수 키이므로 취소도 같은 boxSeq로 맞춰야 해당 박스 예약만 취소된다.
 // custUseNo를 넘기면 boxSeq 유도값 대신 그 값으로 매칭한다(box_waybills에 기록된 실제 접수 키 우선
 // — 부분수거 복구 백필처럼 기록과 유도값이 다를 수 있어, 실제 CJ에 나간 번호가 진실이다).
-function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd, boxSeq = 1, totalBoxes = 1, custUseNo = "" }) {
+export function buildCancelPayload(pickupRequest, { token, cfg, rcptYmd, boxSeq = 1, totalBoxes = 1, custUseNo = "" }) {
+  // 취소에는 신규 신청 검증을 적용하지 않는다. 규격 미확인 레거시 예약도 취소 가능해야 한다.
+  // 기접수 스냅샷 우선, 유령 예약은 신청 규격, 저장 이전 예약만 과거 기본값 사용.
+  const entry = normalizeBoxWaybills(pickupRequest).find((box) => box.box_seq === boxSeq);
+  const boxTypeCd = entry?.box_type_cd || pickupRequest.box_type_codes?.[boxSeq - 1] || cfg.legacyCancelBoxTypeCd || "01";
   const payload = {
-    ...buildRegBookPayload(pickupRequest, { token, invcNo: "", cfg, boxSeq, totalBoxes }),
+    ...buildPickupPayload(pickupRequest, { token, invcNo: "", cfg, boxSeq, totalBoxes, boxTypeCd }),
     RCPT_YMD: rcptYmd,
     REQ_DV_CD: "02",
   };
@@ -792,7 +803,18 @@ function makeFailedResult(pickupRequestId, error) {
   };
 }
 
-async function processPickupRegistration({ supabase, pickupRequestId, force, token, cfg }) {
+// 공식 코드표의 서적 취급 범위만 허용. env나 예상 권수로 규격을 추정하지 않는다.
+export function assertPickupBoxTypes(codes, count) {
+  if (!Number.isInteger(count) || count < 1 || count > Math.min(5, MAX_BOXES_PER_REQUEST)
+      || !Array.isArray(codes) || codes.length !== count
+      || codes.some((code) => !["01", "02", "03", "04", "07"].includes(code))) {
+    const error = new Error("박스별 CJ 규격이 없거나 올바르지 않습니다. 박스 규격을 확인·저장한 뒤 접수해 주세요.");
+    error.code = "PICKUP_BOX_TYPES_REQUIRED";
+    throw error;
+  }
+}
+
+export async function processPickupRegistration({ supabase, pickupRequestId, force, token, cfg }) {
   const pickupRequest = await getPickupRequest(supabase, pickupRequestId);
   if (!pickupRequest) {
     return {
@@ -853,6 +875,13 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
     };
   }
 
+  // 한 박스라도 미선택이면 채번·예약 접수 전에 전체 요청을 차단한다.
+  try {
+    assertPickupBoxTypes(pickupRequest.box_type_codes, totalBoxes);
+  } catch (error) {
+    return { ...makeFailedResult(pickupRequestId, error), requestNumber: pickupRequest.request_number };
+  }
+
   let waybills = existingWaybills;
   const registeredResults = [];
   const boxErrors = [];
@@ -863,6 +892,7 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
       const registeredAt = new Date().toISOString();
       const entry = {
         box_seq: boxSeq,
+        box_type_cd: pickupRequest.box_type_codes[boxSeq - 1],
         tracking_number: cjResult.trackingNumber,
         cust_use_no: cjResult.custUseNo,
         registered_at: registeredAt,
@@ -899,7 +929,7 @@ async function processPickupRegistration({ supabase, pickupRequestId, force, tok
         event_type: "pickup_register",
         status: "success",
         tracking_number: cjResult.trackingNumber,
-        payload: { box_seq: boxSeq, total_boxes: totalBoxes, cust_use_no: cjResult.custUseNo, ...cjResult.rawResponse },
+        payload: { box_seq: boxSeq, box_type_cd: entry.box_type_cd, total_boxes: totalBoxes, cust_use_no: cjResult.custUseNo, ...cjResult.rawResponse },
       });
 
       registeredResults.push({ boxSeq, trackingNumber: cjResult.trackingNumber, healed: cjResult.healed || null });
@@ -1274,10 +1304,11 @@ async function processPickupCancellation({ supabase, pickupRequestId, reason, ge
 
 const REREGISTERABLE_PICKUP_STATUSES = ["pending", "pickup_scheduled"];
 
-async function processPickupReregistration({
+export async function processPickupReregistration({
   supabase,
   pickupRequestId,
   boxCount,
+  boxTypeCodes,
   desiredPickupDate,
   skipCancel = false,
   getToken,
@@ -1325,6 +1356,13 @@ async function processPickupReregistration({
     };
   }
 
+  // 잘못된 규격 때문에 정상 예약부터 취소하는 사고를 막는다.
+  try {
+    assertPickupBoxTypes(boxTypeCodes, nextBoxCount);
+  } catch (error) {
+    return { ...base, success: false, status: "failed", code: error.code, error: error.message };
+  }
+
   // 1) 기존 예약 전량 취소 — 하나라도 실패하면 재접수하지 않는다(이중 출동 방지).
   //    skipCancel은 "CJ에 기존 예약이 이미 없다"를 운영자가 확인한 경우의 탈출구.
   //    CJ 취소 거부 사유는 '기사 스캔 완료'와 '대상 없음'이 모두 같은 E 코드로 오고
@@ -1357,7 +1395,7 @@ async function processPickupReregistration({
 
   // 2) 재접수 조건 반영 (박스 수 · 수거 예정일)
   //    수거 예정일은 COLCT_EXPCT_YMD로 그대로 나가므로, 지난 날짜인 채로 재접수하면 안 된다.
-  const update = {};
+  const update = { box_type_codes: boxTypeCodes };
   if (nextBoxCount !== Number(pickupRequest.box_count)) {
     update.box_count = nextBoxCount;
   }
@@ -1542,6 +1580,7 @@ export default async function handler(req, res) {
             supabase,
             pickupRequestId,
             boxCount: Number.isInteger(boxCount) ? boxCount : null,
+            boxTypeCodes: body.boxTypeCodes,
             desiredPickupDate,
             skipCancel: Boolean(body.skipCancel),
             getToken,

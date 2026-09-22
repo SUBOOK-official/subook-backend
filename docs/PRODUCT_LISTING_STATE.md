@@ -81,6 +81,20 @@ npm --prefix frontend/apps/public-web run build
 
 ## 롤백
 
+### 2026-09-23 추가 보정
+
+사용자 제보 상품 100(임팩트 생활과윤리)은 판매완료·자동 비노출 책 이력이 있지만 상품 상태 로그가 없어 첫 이관에서 누락됐다.
+사용자 수정 지시로 `20260922194000_restore_legacy_sold_out_listing.sql`을 운영 적용했다(커밋 `85b52cd`).
+마지막 책 공개 변경이 판매/예약 전환과 동시이고 미판매 재고가 없으며 이후 상품 상태 변경이 없는 59종을 추가 품절 처리했다.
+상품 로그 존재 자체를 요구하지 않는다. 후속 수동 숨김·미판매 재고는 보존하며 재실행해도 후속 숨김을 되돌리지 않는다.
+실측: 판매중 460 / 품절 267 / 숨김 324. 상품 100은 sold_out/is_listed=true 확인.
+구매자 노출 ID 집합 461종, 책 3,938권 전체 행 fingerprint 불변. 실제 migration 회귀 테스트 및 dry-run 통과, local/remote migration 일치 확인.
+이번 변경은 DB 데이터 보정만으로 적용되며 앱 재배포는 필요 없다. 무관한 미추적 migration은 제외했다.
+추가 보정 롤백이 필요한 경우 이 migration 시각의 product_status_logs hidden→sold_out 대상만 검토하고,
+그 이후 운영 변경이 없는 상품에 한해 별도 migration으로 is_listed=false를 복원한다. 59종 일괄 재숨김을 무조건 실행하지 않는다.
+
+### 최초 분리 변경 롤백
+
 새 컬럼과 운영자가 선택한 공개 설정은 삭제하지 않는다. 주문·재고 데이터도 복원 덮어쓰기를 하지 않는다.
 승인된 별도 rollback migration에서 `products_apply_listing_visibility_trigger`를 제거하고,
 `products_enforce_derived_status_trigger`를 이전의 `BEFORE UPDATE OF status`로 복원한다.

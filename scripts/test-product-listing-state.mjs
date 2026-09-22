@@ -152,6 +152,34 @@ try {
   assert.ok('issues' in adminList.items[0] && 'is_direct_sale' in adminList.items[0]);
   console.log('PASS: 직접 상태 덮어쓰기 차단, 숨김 등록, 권별 노출, 옵션 보존, 미완성 재고 안내, 관리자 필터·건수');
 
+  // 상품 로그가 없던 구형 판매 소진: 최신 책 공개 변경이 판매와 동시인 경우 복원.
+  await db.exec(`
+    insert into products(id,status) values(100,'hidden'),(101,'hidden'),(102,'hidden'),(103,'hidden');
+    insert into books(id,product_id,status,is_public) values
+      (100,100,'settled',false),(101,101,'settled',false),(102,102,'settled',false),(103,103,'on_sale',false);
+    delete from product_status_logs where product_id between 100 and 103;
+    insert into book_change_logs(book_id,field,old_value,new_value,changed_at)
+      select id,'status','on_sale','settled','2026-07-19'::timestamptz from books where id between 100 and 103;
+    insert into book_change_logs(book_id,field,old_value,new_value,changed_at)
+      select id,'is_public','true','false','2026-07-19'::timestamptz from books where id between 100 and 103;
+    insert into product_status_logs(product_id,old_status,new_status,changed_at)
+      values(101,'sold_out','hidden','2026-08-01');
+    insert into book_change_logs(book_id,field,old_value,new_value,changed_at)
+      values(102,'is_public','true','false','2026-08-01');
+  `);
+  const correction=read('20260922194000_restore_legacy_sold_out_listing.sql');
+  const unchangedBooks=(await db.query('select * from books order by id')).rows;
+  const unchangedPublic=await list();
+  await db.exec(correction);
+  assert.deepEqual(await row(100),{status:'sold_out',is_listed:true});
+  for(const id of [101,102,103]) assert.deepEqual(await row(id),{status:'hidden',is_listed:false});
+  assert.deepEqual((await db.query('select * from books order by id')).rows,unchangedBooks);
+  assert.deepEqual(await list(),unchangedPublic);
+  await visibility(100,false);
+  await db.exec(correction);
+  assert.deepEqual(await row(100),{status:'hidden',is_listed:false});
+  console.log('PASS: 상품 로그 없는 판매 소진 복원, 후속 수동 숨김·미판매 재고 보존, 책·구매자 목록 불변, 재실행 안전');
+
   await db.exec("set app.test_admin='false'");
   await assert.rejects(visibility(1,false),/Admin access required/);
   await assert.rejects(db.query('select admin_set_book_visibility(1,false)'),/Admin access required/);

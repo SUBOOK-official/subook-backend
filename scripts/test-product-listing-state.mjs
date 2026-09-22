@@ -180,6 +180,40 @@ try {
   assert.deepEqual(await row(100),{status:'hidden',is_listed:false});
   console.log('PASS: 상품 로그 없는 판매 소진 복원, 후속 수동 숨김·미판매 재고 보존, 책·구매자 목록 불변, 재실행 안전');
 
+  // 식스샵 이전처럼 두 로그가 모두 없고 전량 판매완료인 상품도 품절로 분류한다.
+  await db.exec(`
+    insert into products(id,status,created_at) select id,'hidden','2026-05-06'::timestamptz from generate_series(200,207) id;
+    insert into books(id,product_id,status,is_public) values
+      (200,200,'settled',false),(201,200,'settled',false),
+      (202,202,'discarded',false),(203,203,'settled',false),(204,203,'on_sale',false),
+      (205,204,'settled',false),(206,205,'settled',false),(207,206,'settled',false),(208,207,'settled',false);
+    update products set updated_at='2026-08-20' where id between 200 and 207;
+    delete from product_status_logs where product_id between 200 and 207;
+    insert into product_status_logs(product_id,old_status,new_status,changed_at)
+      values(204,'sold_out','hidden','2026-08-01');
+    insert into book_change_logs(book_id,field,old_value,new_value,changed_at)
+      values(206,'is_public','true','false','2026-08-01');
+    update products set updated_at='2026-09-23 00:00:00+00' where id=206;
+    update products set created_at='2026-08-01' where id=207;
+  `);
+  const importCorrection=read('20260922194100_restore_imported_sold_out_products.sql');
+  const importedBooks=(await db.query('select * from books order by id')).rows;
+  const importedPublic=await list();
+  const importedSearch=await search();
+  await db.exec(importCorrection);
+  assert.deepEqual(await row(200),{status:'sold_out',is_listed:true});
+  for(const id of [201,202,203,204,205,206,207]) assert.deepEqual(await row(id),{status:'hidden',is_listed:false},`legacy exclusion ${id}`);
+  assert.deepEqual((await db.query('select * from books order by id')).rows,importedBooks);
+  assert.deepEqual(await list(),importedPublic);
+  assert.deepEqual(await search(),importedSearch);
+  assert.deepEqual(await detail(200),[]);
+  await db.exec(importCorrection);
+  assert.equal((await db.query("select count(*)::int as n from product_status_logs where product_id=200 and new_status='sold_out'")).rows[0].n,1);
+  await visibility(200,false);
+  await db.exec(importCorrection);
+  assert.deepEqual(await row(200),{status:'hidden',is_listed:false});
+  console.log('PASS: 이전 데이터 전량 판매완료 복원, 빈 상품·폐기·미판매·명시적 숨김·후속 수정 보존, 구매자 목록/검색 불변');
+
   await db.exec("set app.test_admin='false'");
   await assert.rejects(visibility(1,false),/Admin access required/);
   await assert.rejects(db.query('select admin_set_book_visibility(1,false)'),/Admin access required/);

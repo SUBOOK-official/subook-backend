@@ -1,53 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
+import { generateStudioImage } from "../_lib/studioImage.js";
 
-// ⚠️ @google/genai SDK를 쓰지 말 것 (2026-07-23 확인):
-// Vercel의 ESM→CJS 함수 컴파일이 이 패키지만 번들에 인라인하지 못해, 배포 후
-// "Cannot find module '@google/genai/dist/node/index.cjs'"로 함수가 부팅조차 못 했다
-// (7/20 출시 이후 변환 성공 0건의 1차 원인 — 런타임 로그로 확정). Gemini는 아래처럼
-// REST(fetch)로 직접 호출한다. 요청/응답 스키마는 SDK와 동일 (camelCase).
-
-// ⚠️ MODEL_ID는 Google AI Studio에서 실제 사용 가능한 모델로 설정.
-// 환경변수로 외부에서 override 가능 — production에서 invalid model 사고 방지용.
-// 기본값은 GA 모델 gemini-3.1-flash-image (2026-07-23 ListModels·실생성 검증,
-// preview 모델은 예고 없이 폐기될 수 있어 GA 사용). imageSize 1K/2K/4K 지원.
-//
-// ── mode: "summary" (2026-08-03 추가) ────────────────────────────────
-// 이 함수는 표지 스튜디오 변환 외에 상품 AI 요약 단건 생성도 겸한다
-// (body.mode === "summary" 분기, 아래 handleSummaryMode).
-// 별도 파일로 두지 않은 이유: 구현 당시(2026-08-03) Vercel Hobby 함수 12개 상한에
-// 도달해 13번째 함수 추가 시 배포가 거부됐음. 같은 Gemini 호출 계열이라 여기 통합.
-// (2026-08-04 Pro 전환으로 상한은 풀렸지만, DB 트리거가 이 URL을 바라보고 있고
-//  동작에 문제없어 구조는 유지 — 분리하려면 migration의 URL도 함께 바꿀 것.)
-// 호출 경로: products INSERT DB 트리거 + pg_cron 스위퍼(pg_net, body.token 인증,
-// migration 20260804031500) / 수동 Bearer(CRON_SECRET·service key).
-// 대량 백필은 여전히 backend/scripts/generate-ai-summaries.mjs (GitHub Actions).
-const MODEL_ID = process.env.GEMINI_MODEL_ID || "gemini-3.1-flash-image";
-const GEMINI_PRIMARY_IMAGE_SIZE = "2K";
-const GEMINI_FALLBACK_IMAGE_SIZE = "1K";
-const GEMINI_PRIMARY_TIMEOUT_MS = 150_000;
-const GEMINI_FALLBACK_TIMEOUT_MS = 90_000;
-
-const SYSTEM_PROMPT = `
-Using the provided image of the book as the main subject:
-Create a professional, ultra-high-resolution product photo for online sales featuring only this single book.
-
-Requirements (must be strictly followed):
-1. The book in the center must be reproduced exactly as in the provided reference image (maintain same cover design, text, colors, and proportions).
-2. Text on the cover must be perfectly sharp and fully legible.
-3. Replace the background with a clean, light gray background (neutral, studio-style, no patterns).
-4. Layout: horizontal composition, with generous empty margins on all sides.
-5. Lighting: Soft, even, professional studio lighting (no harsh shadows).
-6. The book should appear flat and well-aligned.
-7. Output quality: Photorealistic, 4K quality, look like a premium bestseller photo.
-`.trim();
-
-const MAX_IMAGE_BASE64_LENGTH = 6_000_000;
-// ⚠ Vercel 함수는 요청/응답 본문 모두 4.5MB가 상한이고, 초과하면 우리 코드가 아니라
-// 플랫폼이 413(FUNCTION_PAYLOAD_TOO_LARGE)으로 끊는다 — 클라이언트에는 JSON이 아닌
-// 에러 페이지가 내려와 "원인 불명 실패"로 보인다. 2K 결과가 상한에 걸리면 1K로 재생성해
-// 응답을 줄인다(아래 generateStudioImageWithFallback). JSON 래퍼 여유를 두고 4.2MB에서 컷.
-// 출처: https://vercel.com/docs/functions/limitations#request-body-size
-const MAX_OUTPUT_BASE64_LENGTH = 4_200_000;
+// 표지: GPT Image 2.5 Sunburst medium / 상품 AI 설명(mode: "summary"): Gemini.
+// summary URL은 DB 트리거·pg_cron에서 호출하므로 분기와 인증 규칙을 유지한다.
+const MAX_IMAGE_BASE64_LENGTH = 3_000_000;
 const allowedInputMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function makeErrorResponse({ error, code, detail }) {
@@ -139,158 +95,6 @@ async function assertAdminUser(accessToken) {
     error.statusCode = 403;
     throw error;
   }
-}
-
-function getImageOutput(response) {
-  const parts = response?.candidates?.[0]?.content?.parts || [];
-  for (const part of parts) {
-    if (part?.inlineData?.data) {
-      return {
-        imageBase64: part.inlineData.data,
-        mimeType: part.inlineData.mimeType || "image/png",
-      };
-    }
-  }
-
-  if (response?.data) {
-    return { imageBase64: response.data, mimeType: "image/png" };
-  }
-
-  return null;
-}
-
-// Gemini generateContent REST 직접 호출 — AbortController로 실제 요청까지 취소.
-// (2026-07-23 로컬 검증: 동일 페이로드로 2K 이미지 17초 생성 성공)
-async function requestGeminiImage({ apiKey, imageBase64, mimeType, imageSize, timeoutMs }) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  try {
-    response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`,
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: SYSTEM_PROMPT },
-                { inlineData: { data: imageBase64, mimeType } },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseModalities: ["IMAGE"],
-            imageConfig: {
-              aspectRatio: "1:1",
-              imageSize,
-            },
-          },
-        }),
-        signal: controller.signal,
-      },
-    );
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw makeTimeoutError(timeoutMs);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = new Error(payload?.error?.message || `Gemini HTTP ${response.status}`);
-    error.status = response.status;
-    throw error;
-  }
-  return payload;
-}
-
-function isRetryableGeminiError(error) {
-  const status = Number(error?.status);
-  return (
-    error?.code === "GEMINI_TIMEOUT" ||
-    status === 429 ||
-    Number.isNaN(status) ||
-    status >= 500
-  );
-}
-
-async function generateStudioImageWithFallback({ apiKey, imageBase64, mimeType }) {
-  const attempts = [
-    {
-      label: "primary",
-      imageSize: GEMINI_PRIMARY_IMAGE_SIZE,
-      timeoutMs: GEMINI_PRIMARY_TIMEOUT_MS,
-    },
-    {
-      label: "fallback",
-      imageSize: GEMINI_FALLBACK_IMAGE_SIZE,
-      timeoutMs: GEMINI_FALLBACK_TIMEOUT_MS,
-    },
-  ];
-
-  let lastError = null;
-
-  for (let index = 0; index < attempts.length; index += 1) {
-    const attempt = attempts[index];
-    const isLastAttempt = index === attempts.length - 1;
-
-    try {
-      const response = await requestGeminiImage({
-        apiKey,
-        imageBase64,
-        mimeType,
-        imageSize: attempt.imageSize,
-        timeoutMs: attempt.timeoutMs,
-      });
-
-      const output = getImageOutput(response);
-      if (!output) {
-        const emptyError = new Error("Model response did not contain an image.");
-        emptyError.code = "MODEL_EMPTY_IMAGE_OUTPUT";
-        emptyError.status = 502;
-        emptyError.detail = String(response?.text || "");
-        throw emptyError;
-      }
-
-      // 응답 본문 상한 초과분은 더 작은 해상도로 재생성해서 회수한다.
-      if (output.imageBase64.length > MAX_OUTPUT_BASE64_LENGTH) {
-        const tooLargeError = new Error(
-          `Generated image exceeds the response body limit (base64=${output.imageBase64.length}).`,
-        );
-        tooLargeError.code = "STUDIO_OUTPUT_TOO_LARGE";
-        tooLargeError.status = 502;
-        throw tooLargeError;
-      }
-
-      return output;
-    } catch (error) {
-      lastError = error;
-      console.error("[book-studio] Gemini generation attempt failed", {
-        attempt: attempt.label,
-        imageSize: attempt.imageSize,
-        timeoutMs: attempt.timeoutMs,
-        code: error?.code || "",
-        status: error?.status || "",
-        message: error?.message || "",
-      });
-
-      const recoverable =
-        isRetryableGeminiError(error) ||
-        error?.code === "STUDIO_OUTPUT_TOO_LARGE" ||
-        error?.code === "MODEL_EMPTY_IMAGE_OUTPUT";
-
-      if (isLastAttempt || !recoverable) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError || new Error("GEMINI_GENERATION_FAILED");
 }
 
 // ── 상품 AI 요약 단건 생성 (mode: "summary") ─────────────────────────
@@ -566,12 +370,12 @@ export default async function handler(req, res) {
 
     await assertAdminUser(token);
 
-    const geminiApiKey = getGeminiApiKey();
-    if (!geminiApiKey) {
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) {
       return res.status(500).json(
         makeErrorResponse({
-          error: "Server is missing GEMINI_API_KEY.",
-          code: "MISSING_GEMINI_API_KEY",
+          error: "OpenAI 이미지 API 키가 설정되지 않았습니다.",
+          code: "MISSING_OPENAI_API_KEY",
         }),
       );
     }
@@ -617,9 +421,8 @@ export default async function handler(req, res) {
       );
     }
 
-    // 이미지 추출·응답 크기 검증까지 마친 결과를 받는다(해상도 폴백 포함).
-    const output = await generateStudioImageWithFallback({
-      apiKey: geminiApiKey,
+    const output = await generateStudioImage({
+      apiKey: openaiApiKey,
       imageBase64,
       mimeType,
     });
@@ -658,10 +461,10 @@ export default async function handler(req, res) {
     const code = explicitCode
       ? explicitCode
       : statusCode === 429
-        ? "GEMINI_RATE_LIMITED"
+        ? "OPENAI_RATE_LIMITED"
         : statusCode >= 500
-          ? "GEMINI_SERVER_ERROR"
-          : "GEMINI_REQUEST_FAILED";
+          ? "OPENAI_SERVER_ERROR"
+          : "OPENAI_REQUEST_FAILED";
 
     console.error("[book-studio] handler failure", {
       statusCode,
@@ -672,7 +475,7 @@ export default async function handler(req, res) {
 
     return res.status(statusCode).json(
       makeErrorResponse({
-        error: "Failed to generate studio image.",
+        error: "AI 표지 가공에 실패했습니다. 잠시 후 다시 시도해 주세요.",
         code,
         detail,
       }),

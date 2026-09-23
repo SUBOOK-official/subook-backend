@@ -10,6 +10,16 @@ const ATTEMPT_TIMEOUT_MS = 150_000;
 const STUDIO_PROMPT = `
 Edit the provided real textbook cover into ONE faithful ecommerce product photo.
 This is source-preserving photography, not a cover redesign.
+Correct orientation BEFORE composing the studio photo.
+If the uploaded photograph is wider than it is tall (width > height), treat it
+as a tall portrait textbook or exam booklet photographed lying sideways.
+Rotate the ENTIRE cover by 90 degrees clockwise or counterclockwise, choosing
+the direction that makes the original printed title and text upright and readable.
+The top of the cover must face the top of the output; never leave it sideways or upside down.
+For portrait or square input photos, retain the cover's existing upright orientation.
+Rotate the artwork and text together; never mirror, rearrange or rotate letters separately.
+Keep long, narrow exam booklets at their true aspect ratio and fit the entire cover
+inside the square canvas with margins; never stretch, crop, fold or split them to fit.
 Show this single book centered in a square image, straight and front-facing,
 with its original proportions and full cover visible, ample light neutral gray
 background margins on every side, soft even studio lighting and a subtle contact shadow.
@@ -20,7 +30,7 @@ Preserve intentional graphical effects and fractured/glitch-styled letters as pr
 Do not translate, retype in a new font, simplify, reconstruct or invent unreadable text.
 Do not add text, objects, a spine or pages that are not visible in the source.
 Preserve actual physical wear and marks exactly: do not add, exaggerate, hide or repair wear.
-Change only presentation, alignment, external background and evenness of lighting.
+Change only presentation, orientation, alignment, external background and evenness of lighting.
 `.trim();
 
 function studioError(message, code, status = 502) {

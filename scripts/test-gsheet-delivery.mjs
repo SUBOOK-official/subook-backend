@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { PGlite } from '@electric-sql/pglite';
+const db = new PGlite();
+const read = file => readFileSync(new URL(`../supabase/migrations/${file}`,import.meta.url),'utf8');
+try {
+  await db.exec(`
+    create role anon; create role authenticated; create role service_role;
+    create schema vault; create table vault.decrypted_secrets(name text,decrypted_secret text);
+    insert into vault.decrypted_secrets values ('gsheet_sync_webhook_url','https://test.invalid'),('gsheet_sync_token','test-token');
+    create schema net;
+    create table net.requests(id bigint generated always as identity,url text,body jsonb,timeout_ms integer);
+    create table net._http_response(id bigint,status_code integer,content text,error_msg text);
+    create function net.http_post(url text,body jsonb,timeout_milliseconds integer) returns bigint language sql as $$
+      insert into net.requests(url,body,timeout_ms) values ($1,$2,$3) returning id;
+    $$;
+    create schema cron;
+    create function cron.schedule(text,text,text) returns bigint language sql as $$ select 1::bigint $$;
+    create table public.books(id bigint,serial_number bigint,status text);
+    create function public.notify_gsheet_book_registered() returns trigger language plpgsql as $$ begin return new; end $$;
+    create table public.orders(id bigint,order_number text,status text,payment_status text);
+    create table public.order_items(id bigint,order_id bigint,refunded_at timestamptz);
+    create function public.build_gsheet_sale_rows(bigint) returns jsonb language sql as $$ select '[{"주문 번호":"ORD-1"}]'::jsonb $$;
+    create table public.gsheet_sync_outbox (
+      id bigint generated always as identity primary key,kind text,dedupe_key text,rows jsonb,
+      status text not null default 'pending',attempts integer not null default 0,last_request_id bigint,
+      last_error text,sent_at timestamptz,confirmed_at timestamptz,created_at timestamptz default now(),updated_at timestamptz default now());
+    alter table public.gsheet_sync_outbox enable row level security;
+  `);
+  const old=read('20260819065928_settlement_skip_approval_and_slack_reminder.sql');
+  await db.exec(old.match(/create or replace function public\.ops_cron_health_report\(\)[\s\S]*?\$\$;/i)[0]);
+  await db.exec(read('20260923061105_gsheet_serialized_delivery.sql'));
+  const scalar=async sql=>(await db.query(sql)).rows[0].value;
+  const sweep=()=>db.query('select public.gsheet_sync_sweep()');
+  await db.query(`select public.gsheet_sync_enqueue('inventory',null,'[[null,"x"]]')`);
+  assert.equal(await scalar('select count(*)::int as value from gsheet_sync_outbox'),0);
+  await db.exec(`select public.gsheet_sync_enqueue('inventory',n::text,jsonb_build_array(jsonb_build_array(n,'location'))) from generate_series(1,25) n;`);
+  assert.equal(await scalar('select count(*)::int as value from net.requests'),0,'enqueue must never fire HTTP');
+  await db.query(`select public.gsheet_sync_enqueue('inventory','1','[[1,"location"]]')`);
+  assert.equal(await scalar('select count(*)::int as value from gsheet_sync_outbox'),25,'dedupe queue');
+  await sweep();
+  assert.equal(await scalar(`select body->>'kind' as value from net.requests order by id desc limit 1`),'ping');
+  await db.exec(`insert into net._http_response select id,200,'{"ok": true,"v":3}',null from net.requests;`);
+  await sweep();
+  assert.equal(await scalar(`select jsonb_array_length(body->'rows') as value from net.requests order by id desc limit 1`),20);
+  assert.equal(await scalar(`select count(distinct last_request_id)::int as value from gsheet_sync_outbox where status='sent'`),1);
+  assert.equal(await scalar(`select timeout_ms as value from net.requests order by id desc limit 1`),120000);
+  await sweep();
+  assert.equal(await scalar('select count(*)::int as value from net.requests'),2,'in-flight batch prevents additional requests');
+  await db.exec(`insert into net._http_response values(2,200,'<html>not found</html>',null);`);
+  await sweep();
+  assert.equal(await scalar(`select count(*)::int as value from gsheet_sync_outbox where status='failed'`),0,'HTML is not a permanent config failure');
+  assert.equal(await scalar(`select count(*)::int as value from gsheet_sync_outbox where status='pending' and next_attempt_at>now()`),20);
+  assert.equal(await scalar(`select jsonb_array_length(body->'rows') as value from net.requests order by id desc limit 1`),5,'backoff does not starve new requests');
+  await db.exec(`insert into net._http_response values(3,200,'{"ok":true,"v":3}',null);`);
+  await sweep();
+  assert.equal(await scalar(`select count(*)::int as value from gsheet_sync_outbox where kind='inventory' and status='confirmed'`),5);
+  await db.exec(`insert into gsheet_sync_outbox(kind,rows) values('inventory','[[null]]');`);
+  await sweep();
+  assert.equal(await scalar(`select last_error as value from gsheet_sync_outbox order by id desc limit 1`),'missing_serial_number');
+  await db.exec(`insert into orders values(1,'ORD-1','delivered','paid'),(2,'ORD-2','refunded','refunded');
+    insert into gsheet_sync_outbox(kind,dedupe_key,rows,status,attempts) values('sale','ORD-1','[]','failed',10);`);
+  const retry=(await db.query(`select admin_gsheet_resend_order('ORD-1') as result`)).rows[0].result;
+  assert.equal(retry.ok,true);
+  assert.equal(await scalar(`select attempts as value from gsheet_sync_outbox where id=${retry.outbox_id}`),0);
+  assert.equal((await db.query(`select admin_gsheet_resend_order('ORD-1') as result`)).rows[0].result.outbox_id,retry.outbox_id);
+  assert.equal((await db.query(`select admin_gsheet_resend_order('ORD-2') as result`)).rows[0].result.ok,false);
+  await db.exec(`insert into order_items values(1,1,now());`);
+  assert.equal((await db.query(`select admin_gsheet_resend_order('ORD-1') as result`)).rows[0].result.ok,false,'partial refunds need review');
+  const health=await scalar(`select pg_get_functiondef('ops_cron_health_report()'::regprocedure) as value`);
+  assert.ok(health.includes("status = 'failed' and resolved_at is null"));
+  assert.ok(health.includes("status in ('pending', 'sent') and resolved_at is null"));
+  assert.ok(!health.includes('admin_gsheet_resend_order로'));
+  assert.equal(await scalar(`select has_function_privilege('anon','public.gsheet_sync_sweep()','execute') as value`),false);
+  assert.equal(await scalar(`select has_function_privilege('service_role','public.gsheet_sync_sweep()','execute') as value`),true);
+  console.log('PASS: serialized batches, protocol gate, retry fairness, HTML parsing, invalid keys, refund guards, health and permissions');
+} finally { await db.close(); }

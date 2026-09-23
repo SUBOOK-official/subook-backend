@@ -1,5 +1,6 @@
 /**
- * 수북 구글시트 자동 기록 웹앱 (Apps Script) — v2
+ * 수북 구글시트 자동 기록 웹앱 (Apps Script) — v3
+ * 2026-09-23: DB 단일 요청 배치와 함께 사용. 빈 식별자 거부, 쓰기 완료 후 락 해제.
  * — 운영 스프레드시트에 바인딩해서 배포 (시트 → 확장 프로그램 → Apps Script)
  *
  * DB 트리거/스윕(20260804033000_gsheet_sync_outbox_retry.sql)이 pg_net으로 POST:
@@ -55,33 +56,45 @@ function doPost(e) {
   try {
     var payload = JSON.parse(e.postData.contents);
     if (!payload || payload.token !== SHARED_TOKEN) {
-      return jsonOut({ ok: false, v: 2, error: "unauthorized" });
+      return jsonOut({ ok: false, v: 3, error: "unauthorized" });
     }
     // ping은 시트·락 없이 즉답 — DB 스윕의 v2 배포 감지용
     if (payload.kind === "ping") {
-      return jsonOut({ ok: true, v: 2, pong: true });
+      return jsonOut({ ok: true, v: 3, pong: true });
     }
 
     var lock = LockService.getScriptLock();
-    // 락 대기는 try 안에서, 충분히 길게(4분 — Apps Script 실행 상한 6분 이내).
-    // v1은 waitLock(20000)이 try 밖에 있어 대기 초과 시 요청째 유실됐다.
-    if (!lock.tryLock(240000)) {
-      return jsonOut({ ok: false, v: 2, error: "lock_timeout" });
+    // DB가 한 요청씩 발송한다. 경합 시 길게 쌓지 않고 backoff 후 재시도한다.
+    if (!lock.tryLock(1000)) {
+      return jsonOut({ ok: false, v: 3, error: "lock_timeout" });
     }
     try {
       var rows = payload.rows || [];
-      if (payload.kind === "inventory") return jsonOut(appendInventory(rows));
-      if (payload.kind === "sale") return jsonOut(appendSales(rows));
-      return jsonOut({ ok: false, v: 2, error: "unknown kind" });
+      var result;
+      if (payload.kind === "inventory") result = appendInventory(rows);
+      else if (payload.kind === "sale") result = appendSales(rows);
+      else result = { ok: false, error: "unknown kind" };
+      // 보류된 쓰기가 완료된 뒤에만 성공 응답/락 해제. 다음 요청의 중복 조회와 경합 방지.
+      SpreadsheetApp.flush();
+      result.v = 3;
+      return jsonOut(result);
     } finally {
       lock.releaseLock();
     }
   } catch (err) {
-    return jsonOut({ ok: false, v: 2, error: String(err) });
+    return jsonOut({ ok: false, v: 3, error: String(err) });
   }
 }
 
 function appendSales(rows) {
+  if (!rows.length) return { ok: true, appended: 0, skipped: 0 };
+  if (rows.some(function (row) { return !String(row[SALES_ORDER_NO_HEADER] || "").trim(); })) {
+    return { ok: false, error: "missing_order_number" };
+  }
+  var orderNumber = String(rows[0][SALES_ORDER_NO_HEADER]).trim();
+  if (rows.some(function (row) { return String(row[SALES_ORDER_NO_HEADER]).trim() !== orderNumber; })) {
+    return { ok: false, error: "one_order_per_request" };
+  }
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SALES_SHEET_NAME);
   if (!sheet) return { ok: false, v: 2, error: "sales sheet not found" };
 
@@ -94,12 +107,41 @@ function appendSales(rows) {
   // 멱등성: 이미 기록된 주문번호는 건너뛴다 (재전송이 중복 행을 만들지 않게)
   var skipped = 0;
   var orderCol = headers.indexOf(SALES_ORDER_NO_HEADER) + 1;
+  if (orderCol === 0) return { ok: false, error: "missing_order_header" };
+  var matchedRows = [];
   if (orderCol > 0 && lastRow >= 2) {
     var existing = {};
-    sheet.getRange(2, orderCol, lastRow - 1, 1).getValues().forEach(function (r) {
+    sheet.getRange(2, orderCol, lastRow - 1, 1).getValues().forEach(function (r, index) {
       var v = String(r[0] || "").trim();
       if (v) existing[v] = true;
+      if (v === orderNumber) matchedRows.push(index + 2);
     });
+    // 주문번호만 먼저 써지고 나머지 구간 쓰기가 실패한 경우를 성공으로 오인하지 않는다.
+    if (matchedRows.length) {
+      if (matchedRows.length !== rows.length) return { ok: false, error: "existing_order_conflict" };
+      var repairs = [];
+      for (var ri = 0; ri < rows.length; ri++) {
+        var current = sheet.getRange(matchedRows[ri], 1, 1, lastCol).getValues()[0];
+        for (var ci = 0; ci < headers.length; ci++) {
+          var key = headers[ci];
+          if (!Object.prototype.hasOwnProperty.call(rows[ri], key)) continue;
+          var expected = rows[ri][key];
+          if (expected === null || expected === undefined || expected === "") continue;
+          if (String(current[ci]) === String(expected)) continue;
+          if (current[ci] !== "" && current[ci] !== null && current[ci] !== undefined) {
+            return { ok: false, error: "existing_order_conflict" };
+          }
+          repairs.push({ row: matchedRows[ri], col: ci + 1, value: expected,
+            format: SALES_NUMERIC_HEADERS.indexOf(key) >= 0 ? "0" : "@" });
+        }
+      }
+      repairs.forEach(function (repair) {
+        var cell = sheet.getRange(repair.row, repair.col, 1, 1);
+        cell.setNumberFormats([[repair.format]]);
+        cell.setValues([[repair.value]]);
+      });
+      return { ok: true, appended: 0, skipped: rows.length, repairedCells: repairs.length };
+    }
     rows = rows.filter(function (obj) {
       var no = String(obj[SALES_ORDER_NO_HEADER] || "").trim();
       if (no && existing[no]) { skipped++; return false; }
@@ -150,6 +192,10 @@ function appendSales(rows) {
 }
 
 function appendInventory(rows) {
+  // 빈 일련번호는 동일성 판단이 불가능하다. 시트에 한 셀도 쓰기 전에 배치 전체 거부.
+  if (rows.some(function (row) { return !String(row[0] === null || row[0] === undefined ? "" : row[0]).trim(); })) {
+    return { ok: false, error: "missing_serial_number" };
+  }
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(INVENTORY_SHEET_NAME);
   if (!sheet) return { ok: false, v: 2, error: "inventory sheet not found" };
 
@@ -157,18 +203,19 @@ function appendInventory(rows) {
 
   // 멱등성: A열 일련번호가 이미 있으면 건너뛴다
   var skipped = 0;
+  var existing = {};
   if (lastRow >= 2) {
-    var existing = {};
     sheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach(function (r) {
       var v = String(r[0] || "").trim();
       if (v) existing[v] = true;
     });
+  }
     rows = rows.filter(function (row) {
       var serial = String(row[0] === null || row[0] === undefined ? "" : row[0]).trim();
       if (serial && existing[serial]) { skipped++; return false; }
+      existing[serial] = true;
       return true;
     });
-  }
   if (rows.length === 0) return { ok: true, v: 2, appended: 0, skipped: skipped };
 
   // A~F 통째 N행 블록 쓰기 — 수식 열(판매완료여부)은 F 뒤라 건드리지 않는다

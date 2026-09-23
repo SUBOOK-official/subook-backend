@@ -31,6 +31,7 @@ try {
   await db.exec(old.match(/create or replace function public\.ops_cron_health_report\(\)[\s\S]*?\$\$;/i)[0]);
   await db.exec(read('20260923061105_gsheet_serialized_delivery.sql'));
   await db.exec(read('20260923062855_gsheet_protocol_probe_retry.sql'));
+  await db.exec(read('20260923063513_gsheet_execution_timeout.sql'));
   const scalar=async sql=>(await db.query(sql)).rows[0].value;
   const sweep=()=>db.query('select public.gsheet_sync_sweep()');
   await db.query(`select public.gsheet_sync_enqueue('inventory',null,'[[null,"x"]]')`);
@@ -45,7 +46,7 @@ try {
   await sweep();
   assert.equal(await scalar(`select jsonb_array_length(body->'rows') as value from net.requests order by id desc limit 1`),20);
   assert.equal(await scalar(`select count(distinct last_request_id)::int as value from gsheet_sync_outbox where status='sent'`),1);
-  assert.equal(await scalar(`select timeout_ms as value from net.requests order by id desc limit 1`),120000);
+  assert.equal(await scalar(`select timeout_ms as value from net.requests order by id desc limit 1`),420000);
   await sweep();
   assert.equal(await scalar('select count(*)::int as value from net.requests'),2,'in-flight batch prevents additional requests');
   await db.exec(`insert into net._http_response values(2,200,'<html>not found</html>',null);`);

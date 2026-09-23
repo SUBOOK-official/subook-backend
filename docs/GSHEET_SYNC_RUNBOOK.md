@@ -4,7 +4,7 @@
 
 - `gsheet_sync_enqueue`는 DB에만 적재한다. 즉시 HTTP를 발송하지 않는다.
 - `subook-gsheet-sync-sweep`는 매분 실행한다. advisory lock과 미완료 `sent` 확인으로 HTTP 요청 하나만 진행한다.
-- 재고는 최대 20건을 HTTP 1개로 묶는다. 판매는 주문당 HTTP 1개다. HTTP timeout은 120초다.
+- 재고는 최대 20건을 HTTP 1개로 묶는다. 판매는 주문당 HTTP 1개다. HTTP timeout은 420초다. 수식이 많은 운영 원장에서 123.838초가 실측되어 Apps Script 실행 한도 6분 + 여유 1분으로 설정했다.
 - 실패 후 5~60분 간격으로 최대 10회 시도한다. `next_attempt_at` 순서로 새 요청이 오래된 재시도에 막히지 않게 한다.
 - Apps Script v3 ping 확인 전에는 쓰기 요청을 보내지 않는다. 버전 확인은 하루마다 갱신한다.
 - JSON의 `ok: true`를 파싱한다. HTML 페이지에 `not found`가 들어 있다고 인증/설정 오류로 단정하지 않는다.
@@ -29,7 +29,7 @@
 - Apps Script: `docs/gsheet-sync-appsscript.gs`를 기존 Code.gs에 반영한다. 실제 토큰과 다른 스크립트 파일은 보존한다.
 - **여러 활성 배포가 있다. Vault의 운영 webhook URL과 일치하는 배포를 갱신해야 한다.** 최신 번호의 다른 배포를 선택하지 않는다.
 - 기존 배포의 새 버전을 생성한다. 인증 승인 후 실제 운영 URL에 `kind: ping`을 보내 `ok=true, v=3`을 확인한다.
-- DB: migrations `20260923061105`, `20260923062855`를 dry-run으로 확인한 뒤 적용한다. 기존 앱의 Vercel 배포는 필요 없다.
+- DB: migrations `20260923061105`, `20260923062855`, `20260923063513`을 dry-run으로 확인한 뒤 적용한다. 기존 앱의 Vercel 배포는 필요 없다.
 - 테스트: `node --test backend/tests/gsheet-sync.test.js`, `node backend/scripts/test-gsheet-delivery.mjs` (루트에서 실행).
 - 운영 확인: 아웃박스 `confirmed`만 확인하지 말고 시트의 행/금액도 다시 대조한다. health RPC는 Slack을 발송하므로 읽기 점검 용도로 호출하지 않는다.
 
@@ -39,3 +39,4 @@
 - [Apps Script 배포 버전 관리](https://developers.google.com/apps-script/concepts/deployments)
 - [Lock와 쓰기 flush](https://developers.google.com/apps-script/reference/lock/lock)
 - [Google 서비스 인증](https://developers.google.com/apps-script/guides/services/authorization)
+- [Apps Script 실행 시간 제한](https://developers.google.com/apps-script/guides/services/quotas)

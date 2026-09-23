@@ -10,27 +10,31 @@ const ATTEMPT_TIMEOUT_MS = 150_000;
 const STUDIO_PROMPT = `
 Edit the provided real textbook cover into ONE faithful ecommerce product photo.
 This is source-preserving photography, not a cover redesign.
-Correct orientation BEFORE composing the studio photo.
-If the uploaded photograph is wider than it is tall (width > height), treat it
-as a tall portrait textbook or exam booklet photographed lying sideways.
-Rotate the ENTIRE cover by 90 degrees clockwise or counterclockwise, choosing
-the direction that makes the original printed title and text upright and readable.
-The top of the cover must face the top of the output; never leave it sideways or upside down.
-For portrait or square input photos, retain the cover's existing upright orientation.
-Rotate the artwork and text together; never mirror, rearrange or rotate letters separately.
-Keep long, narrow exam booklets at their true aspect ratio and fit the entire cover
-inside the square canvas with margins; never stretch, crop, fold or split them to fit.
+GEOMETRY LOCK — the input has already been oriented by a pixel-only rotation.
+Do NOT rotate it again or infer a different book shape from its title or category.
+Treat the entire visible cover as one rigid, flat rectangle with fixed proportions.
+Keep its measured width-to-height ratio EXACTLY as shown in this input.
+There is NO preset or target aspect ratio. Use this particular input's proportions.
+The preprocessing rotation only swaps the original width W and height H into H and W;
+it never changes either side's length. Keep that exact resulting geometry.
+The square OUTPUT CANVAS is only background; it must NEVER make the cover square
+or wider, shorter, longer or narrower. Only uniform scaling is allowed: multiply
+both cover dimensions by the SAME factor. Preserve all four corners and edges.
+Do not stretch, squeeze, warp, crop, fold, split, redraw or reconstruct the cover.
+Do not rearrange the artwork or reflow text to fit a conventional textbook shape.
+Preserve the exact relative positions and proportions of all printed elements.
+If the cover does not fill the square canvas, leave background space around it.
 Show this single book centered in a square image, straight and front-facing,
 with its original proportions and full cover visible, ample light neutral gray
 background margins on every side, soft even studio lighting and a subtle contact shadow.
-Remove scanner surroundings and correct perspective/skew.
+Remove only scanner surroundings outside the cover; do not change the cover geometry.
 The original cover is authoritative: preserve its exact artwork, colors, layout,
 typography, logos, every Korean character, every number, year, edition and volume.
 Preserve intentional graphical effects and fractured/glitch-styled letters as printed.
 Do not translate, retype in a new font, simplify, reconstruct or invent unreadable text.
 Do not add text, objects, a spine or pages that are not visible in the source.
 Preserve actual physical wear and marks exactly: do not add, exaggerate, hide or repair wear.
-Change only presentation, orientation, alignment, external background and evenness of lighting.
+Change only external background, placement and evenness of lighting. Geometry preservation wins over styling.
 `.trim();
 
 function studioError(message, code, status = 502) {

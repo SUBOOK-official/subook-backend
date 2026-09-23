@@ -30,6 +30,7 @@ try {
   const old=read('20260819065928_settlement_skip_approval_and_slack_reminder.sql');
   await db.exec(old.match(/create or replace function public\.ops_cron_health_report\(\)[\s\S]*?\$\$;/i)[0]);
   await db.exec(read('20260923061105_gsheet_serialized_delivery.sql'));
+  await db.exec(read('20260923062855_gsheet_protocol_probe_retry.sql'));
   const scalar=async sql=>(await db.query(sql)).rows[0].value;
   const sweep=()=>db.query('select public.gsheet_sync_sweep()');
   await db.query(`select public.gsheet_sync_enqueue('inventory',null,'[[null,"x"]]')`);
@@ -73,5 +74,16 @@ try {
   assert.ok(!health.includes('admin_gsheet_resend_order로'));
   assert.equal(await scalar(`select has_function_privilege('anon','public.gsheet_sync_sweep()','execute') as value`),false);
   assert.equal(await scalar(`select has_function_privilege('service_role','public.gsheet_sync_sweep()','execute') as value`),true);
+  await db.exec(`truncate net.requests,net._http_response,gsheet_sync_outbox restart identity;
+    insert into gsheet_sync_outbox(kind,dedupe_key,rows) values('sale','ORD-3','[{"주문 번호":"ORD-3"}]');`);
+  await sweep();
+  await db.exec(`insert into net._http_response values(1,200,'{"ok":true,"v":2}',null);`);
+  await sweep();
+  assert.equal(await scalar(`select status as value from gsheet_sync_outbox where kind='ping'`),'pending');
+  await db.exec(`update gsheet_sync_outbox set next_attempt_at=now() where kind='ping';`);
+  await sweep();
+  assert.equal(await scalar(`select count(*)::int as value from gsheet_sync_outbox where kind='ping'`),1);
+  assert.equal(await scalar(`select attempts as value from gsheet_sync_outbox where kind='ping'`),2);
+  assert.equal(await scalar(`select body->>'kind' as value from net.requests order by id desc limit 1`),'ping');
   console.log('PASS: serialized batches, protocol gate, retry fairness, HTML parsing, invalid keys, refund guards, health and permissions');
 } finally { await db.close(); }

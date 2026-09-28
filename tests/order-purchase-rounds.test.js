@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 
-const id = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
+const userId = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
+const id = (n) => n;
 
 test('주문 구매 차수: 전체 이력, 비회원 정규화, 미결제/환불, 동시각 및 접근 권한', async (t) => {
   const db = new PGlite();
@@ -14,15 +15,16 @@ test('주문 구매 차수: 전체 이력, 비회원 정규화, 미결제/환불
         select nullif(current_setting('test.admin', true), '')::boolean
       $$;
       create table public.orders (
-        id uuid primary key, user_id uuid, shipping_recipient_phone text,
+        id bigint primary key, user_id uuid, shipping_recipient_phone text,
         payment_status text, paid_at timestamptz, pg_approved_at timestamptz, created_at timestamptz
       );
       alter table public.orders enable row level security;
     `);
     await db.exec(readFileSync(new URL('../supabase/migrations/20260928055823_admin_order_purchase_rounds.sql', import.meta.url), 'utf8'));
+    await db.exec(readFileSync(new URL('../supabase/migrations/20260928060749_admin_order_purchase_rounds_bigint.sql', import.meta.url), 'utf8'));
     const add = async (n, user, payment, time, phone = '010-1111-2222', legacy = false) => db.query(
       'insert into public.orders values ($1, $2, $3, $4, $5, $6, $7)',
-      [id(n), user ? id(user) : null, phone, payment,
+      [id(n), user ? userId(user) : null, phone, payment,
         payment === 'pending' || payment === 'cancelled' || legacy ? null : time,
         legacy ? time : null, time],
     );
@@ -40,7 +42,7 @@ test('주문 구매 차수: 전체 이력, 비회원 정규화, 미결제/환불
     await add(12, 100, 'pending', '2026-04-01T00:00:00Z');
     await add(13, 100, 'paid', '2026-05-01T00:00:00Z');
     const rounds = async (numbers) => (await db.query(
-      'select public.admin_order_purchase_rounds($1::uuid[]) as rounds',
+      'select public.admin_order_purchase_rounds($1::bigint[]) as rounds',
       [numbers === null ? null : numbers.map(id)],
     )).rows[0].rounds;
 

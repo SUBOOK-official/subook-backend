@@ -198,6 +198,7 @@ export async function loadGaPerformance(range, env = process.env, fetcher = fetc
     const core = await call("v1beta", "batchRunReports", { requests: [
       { dateRanges: periods, metrics, limit: "10" },
       { dateRanges: [periods[0]], metrics, dimensions: [{ name: "date" }], limit: "400", orderBys: [{ dimension: { dimensionName: "date" } }] },
+      { dateRanges: [periods[0]], metrics: [{ name: "ecommercePurchases" }], dimensions: [{ name: "transactionId" }], limit: "10000" },
     ] });
     const coreRows = decodeGaRows(core.reports?.[0]);
     if (coreRows.some((row) => !["current", "previous"].includes(row.dateRange))) throw new Error("INVALID_GA_PERIOD");
@@ -210,6 +211,11 @@ export async function loadGaPerformance(range, env = process.env, fetcher = fetc
       daily: decodeGaRows(core.reports?.[1]).map((row) => ({ ...mapSummary(row), date: `${row.date.slice(0, 4)}-${row.date.slice(4, 6)}-${row.date.slice(6, 8)}` })),
       thresholded: core.reports.some((report) => report.metadata?.subjectToThresholding || report.metadata?.dataLossFromOtherRow),
     };
+    const transactions = core.reports?.[2];
+    result.transactionIds = transactions && (transactions.rowCount ?? 0) <= 10000
+      && !transactions.metadata?.subjectToThresholding && !transactions.metadata?.dataLossFromOtherRow
+      ? decodeGaRows(transactions).filter((row) => row.ecommercePurchases > 0 && row.transactionId && row.transactionId !== '(not set)').map((row) => row.transactionId)
+      : null;
     const pairs = [["view_item", "add_to_cart"], ["begin_checkout", "purchase"]];
     const funnels = await Promise.allSettled(periods.flatMap((period) => pairs.map((events) => call("v1alpha", "runFunnelReport", {
       dateRanges: [period], funnel: { isOpenFunnel: false, steps: events.map((eventName) => ({ name: eventName,
@@ -297,9 +303,9 @@ export async function loadMetaPerformance(range, env = process.env, fetcher = fe
       const filters = [];
       if (range.campaignId) filters.push({ field: "campaign.id", operator: "IN", value: [range.campaignId] });
       if (range.adsetId) filters.push({ field: "adset.id", operator: "IN", value: [range.adsetId] });
-      const rows = await insights({ fields: `${fields},${range.level}_id,${range.level}_name`, level: range.level,
+      const rows = await insights({ fields: `${fields},${range.level}_id,${range.level}_name,objective`, level: range.level,
         time_range: JSON.stringify({ since: range.from, until: range.to }), ...(filters.length ? { filtering: JSON.stringify(filters) } : {}) });
-      return rows.map((row) => ({ id: row[`${range.level}_id`], name: row[`${range.level}_name`], ...summarizeMeta([row]) })).sort((a, b) => b.spend - a.spend);
+      return rows.map((row) => ({ id: row[`${range.level}_id`], name: row[`${range.level}_name`], objective: row.objective || null, ...summarizeMeta([row]) })).sort((a, b) => b.spend - a.spend);
     });
     return { ...totals, breakdownStatus: "ready", breakdown };
   } catch (error) {

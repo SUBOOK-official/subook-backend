@@ -89,5 +89,69 @@ try {
   await db.query('update content_themes set is_enabled=false where id=$1',[themeId]);
   assert.equal(await scalar('select get_public_theme_page($1)',[themeId]),null,'public RPC never exposes disabled themes, even to admin');
   await db.exec('reset role');
+  // 후속 관리 기능은 실제 목록·상세 RPC와 함께 검증한다.
+  const listingMigration = read('20260922180318_separate_product_listing_from_stock.sql');
+  await db.exec(`
+    alter table products add column status text default 'selling', add column ai_summary text;
+    alter table books add column title text, add column subject text, add column brand text,
+      add column book_type text, add column instructor_name text;
+    create table site_promotions(placement text,is_enabled boolean,starts_at timestamptz,ends_at timestamptz);
+  `);
+  await db.exec(listingMigration.match(/CREATE OR REPLACE FUNCTION public\.get_public_store_product_detail\([\s\S]*?\$function\$\s*;/)[0]);
+  await db.exec(read('20260930031759_banner_copy_cache.sql'));
+  const oldBannerIds = (await list('recommended',12)).map(row=>row.id);
+  const oldPopular = await list();
+  await db.exec(read('20260930043206_curate_catalog_and_hero_products.sql'));
+  assert.deepEqual(await list(),oldPopular,'popular order and catalog contents are unchanged');
+  const newRecommended = await list('recommended');
+  assert.deepEqual(newRecommended.slice(0,4).map(row=>row.id),[31,8,9,10],'public sold-out recommendation keeps its configured position');
+  assert.deepEqual(await list('recommended',12,12),newRecommended.slice(12,24));
+  assert.deepEqual((await scalar('select get_public_hero_products()')).map(row=>row.product.id),oldBannerIds,'existing banner candidates are preserved');
+  await db.exec("update product_recommendations set sort_order=0 where product_id=9");
+  assert.deepEqual((await list('recommended')).slice(0,2).map(row=>row.id),[9,31],'tied order follows product id as in admin');
+  assert.deepEqual((await scalar('select get_public_hero_products()')).map(row=>row.product.id),oldBannerIds,'recommendation edits do not change banner order');
+  await db.exec(`
+    update product_hero_banners set is_enabled=false;
+    insert into product_hero_banners(product_id,sort_order,headline,is_enabled) values(139,1,'수동 문구',true),(140,0,'',true),(1,0,'숨김',true);
+  `);
+  assert.deepEqual((await scalar('select get_public_hero_products()')).map(row=>row.product.id),[140,139]);
+  assert.deepEqual((await db.query('select id from get_banner_copy_sources()')).rows.map(row=>row.id),[140],'AI sources follow visible banners without manual copy');
+  await db.exec(`
+    insert into product_hero_banners(product_id,is_enabled) select generate_series(100,119),true;
+    insert into banner_copy_cache(product_id,source_hash,copy)
+      select id,banner_copy_source_hash(p),'기존 문구' from products p where id between 100 and 112;
+  `);
+  assert.deepEqual((await db.query('select id from get_banner_copy_sources() limit 8')).rows.map(row=>row.id),[113,114,115,116,117,118,119,140],
+    'uncached banners beyond the first 13 are not starved by the generation cap');
+  await db.exec("update product_hero_banners set is_enabled=false");
+  assert.deepEqual(await scalar('select get_public_hero_products()'),[],'no automatic refill when all banners are disabled');
+
+  await db.exec(`insert into products(id,title,instructor_name,option) select id,'시대인재 서바이벌 모의고사','홍길동','시즌 2' from generate_series(141,1250) id`);
+  await db.exec("set role authenticated; select set_config('test.admin','false',false)");
+  await assert.rejects(db.exec("select admin_list_curated_products()"),/관리자 권한/);
+  await assert.rejects(db.exec("insert into product_hero_banners(product_id) values(1000)"),/row-level security/);
+  assert.equal((await db.query('update product_hero_banners set is_enabled=true returning product_id')).rows.length,0);
+  await db.exec("select set_config('test.admin','true',false)");
+  const pageIds=[];
+  for(let offset=0;offset<1110;offset+=30){
+    const found=await scalar('select admin_list_curated_products($1,30,$2)',['시대 인재 홍길동 시즌 2',offset]);
+    assert.equal(found.total_count,1110);
+    pageIds.push(...found.products.map(row=>row.id));
+  }
+  assert.equal(pageIds.length,1110); assert.equal(new Set(pageIds).size,1110);
+  assert.equal((await scalar("select admin_list_curated_products('',30,0)")).total_count,1250);
+  assert.equal((await scalar("select admin_list_curated_products('홍',30,0)")).total_count,1110);
+  assert.equal((await scalar("select admin_list_curated_products('1250',30,0)")).products[0].id,1250);
+  assert.equal((await scalar("select admin_list_curated_products('%',30,0)")).total_count,0,'wildcards are literal');
+  const emptyPage=await scalar("select admin_list_curated_products('홍',30,9999)");
+  assert.deepEqual(emptyPage.products,[]); assert.equal(emptyPage.total_count,1110);
+  await db.exec('insert into product_hero_banners(product_id) values(1000)');
+  await db.exec('reset role; set role anon');
+  await assert.rejects(db.exec('select admin_list_curated_products()'),/permission denied/);
+  assert.equal(await scalar('select count(*)::int from product_hero_banners'),0);
+  await assert.rejects(db.exec('select * from get_banner_copy_sources()'),/permission denied/);
+  assert.deepEqual(await scalar('select get_public_hero_products()'),[]);
+  await db.exec('reset role');
+  console.log('PASS: sold-out/tied recommendation order, independent banner selection/copy, no automatic refill, literal multi-field search, complete 1110-match pagination, anon/member/admin permissions');
   console.log('PASS: unchanged catalog, server ranking/pagination, year/search/instructor filters, 8 available banners, 100+ product themes, missing/hidden/duplicate products, anon/member/admin RLS, private helper privilege, stale write conflict');
 } finally { await db.close(); }

@@ -1,0 +1,346 @@
+[
+  {
+    "id": 23,
+    "title": "2025 강남대성 크럭스CRUX 미적분",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 CRUX 수학·과학 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 24,
+    "title": "2025 강남대성 크럭스CRUX 화학1",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 CRUX 수학·과학 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 25,
+    "title": "2025 메가스터디 시냅스 수학1 현우진T",
+    "previous_type": "N제",
+    "book_type": "워크북",
+    "reason": "뉴런 복습용 부교재 단품. 수북 워크북 항목 권고",
+    "source_url": "https://api.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=58206&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 55,
+    "title": "2025 강남대성 크럭스CRUX 생명과학1",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 CRUX 수학·과학 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 87,
+    "title": "2025 이감 간쓸개 파이널2 국어",
+    "previous_type": "N제",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 88,
+    "title": "2026 이감 간쓸개 파이널2 국어",
+    "previous_type": "N제",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 227,
+    "title": "2025 이감 간쓸개 파이널1 국어",
+    "previous_type": "모의고사",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 368,
+    "title": "2025 이감 간쓸개 파이널 1 시즌 5 국어",
+    "previous_type": "N제",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 489,
+    "title": "2025 강남대성 크럭스 CRUX 수학1",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 CRUX 수학·과학 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 1139,
+    "title": "2026 시대인재 리바이벌 물리학1 1~3",
+    "previous_type": "모의고사",
+    "book_type": "N제",
+    "reason": "공식 탐구 리바이벌 시리즈 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 1152,
+    "title": "2026 시대인재 리바이벌 화학2",
+    "previous_type": "모의고사",
+    "book_type": "N제",
+    "reason": "공식 탐구 리바이벌 시리즈 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 1238,
+    "title": "2026 이감 간쓸개 파이널2",
+    "previous_type": "N제",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 2220,
+    "title": "2025 메가스터디 수분감 미적분 현우진T",
+    "previous_type": "개념",
+    "book_type": "기출",
+    "reason": "공식 수분감 시리즈 설명과 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=54614&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2224,
+    "title": "2025 메가스터디 드릴 DRILL 수학 현우진T",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "심화 문제풀이 교재 성격을 수북 N제로 대응",
+    "source_url": "https://m.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=56235&TEC_CD=woojinmath"
+  },
+  {
+    "id": 2233,
+    "title": "2026 이감 파이널1 예비평가 국어",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2234,
+    "title": "2026 이감 파이널2 예비평가 국어",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2243,
+    "title": "2026 시대인재 QED WEEKLY COMB 수학 박종민T",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "상품명에 주기적 학습 교재 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2248,
+    "title": "2026 이감 간쓸개 SEASON1 국어",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 2252,
+    "title": "2026 시대인재 저스트 위클리 JUST WEEKLY 수학2 이동준T",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "상품명에 주기적 학습 교재 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2262,
+    "title": "2026 시대인재 전국모의평가 서바이벌 프로 PRO 전과목",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 서바이벌·브릿지·트러스 계열 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2264,
+    "title": "2026 시대인재 서바이벌 콘텐츠(서바이벌&서바이벌 전국) 수학(미적분)",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 서바이벌·브릿지·트러스 계열 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2275,
+    "title": "2026 메가스터디 수분감 수학1 현우진T",
+    "previous_type": "개념",
+    "book_type": "기출",
+    "reason": "공식 수분감 시리즈 설명과 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=54614&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2276,
+    "title": "2026 메가스터디 수분감 확률과통계 현우진T",
+    "previous_type": "개념",
+    "book_type": "기출",
+    "reason": "공식 수분감 시리즈 설명과 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=54614&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2277,
+    "title": "2026 메가스터디 수분감 미적분 현우진T",
+    "previous_type": "개념",
+    "book_type": "기출",
+    "reason": "공식 수분감 시리즈 설명과 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=54614&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2319,
+    "title": "2025 시대인재 리바이벌 REVIVIAL 물리학1",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 탐구 리바이벌 시리즈 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2324,
+    "title": "2026 시대인재 국어하다 손창빈처럼 주간과제 시즌1 손창빈T",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "상품명에 주기적 학습 교재 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2325,
+    "title": "2026 시대인재 국어하다 손창빈처럼 주간교재 시즌1 손창빈T",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "상품명에 주기적 학습 교재 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2329,
+    "title": "2026 시대인재 이신혁 모의평가 시즌2 지구과학1",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2367,
+    "title": "2026 메가스터디 시냅스 수학1 현우진T",
+    "previous_type": "개념",
+    "book_type": "워크북",
+    "reason": "뉴런 복습용 부교재 단품. 수북 워크북 항목 권고",
+    "source_url": "https://api.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=58206&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2368,
+    "title": "2026 메가스터디 시냅스 수학2 현우진T",
+    "previous_type": "개념",
+    "book_type": "워크북",
+    "reason": "뉴런 복습용 부교재 단품. 수북 워크북 항목 권고",
+    "source_url": "https://api.megastudy.net/teacher_v2/chr/lecture_detailview.asp?CHR_CD=58206&MAKE_FLG=1&tec_cd=woojinmath"
+  },
+  {
+    "id": 2438,
+    "title": "2026 시대인재 서바이벌 N 11월 수능모의평가 (국/영/수/한국사)",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 서바이벌·브릿지·트러스 계열 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2439,
+    "title": "2026 시대인재 서바이벌 N 11월 수능모의평가 (사회탐구영역)",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 서바이벌·브릿지·트러스 계열 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2484,
+    "title": "2027 강남대성 김범준 6월 모의평가 수학 김범준T",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2486,
+    "title": "2027 강남대성 서킷 CIRCUIT 수학",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 CIRCUIT 계열 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 2508,
+    "title": "2027 시대인재 리바이벌 생명과학1",
+    "previous_type": "개념",
+    "book_type": "N제",
+    "reason": "공식 탐구 리바이벌 시리즈 설명과 대조",
+    "source_url": "https://contents.sdij.com/survival-contents/guide"
+  },
+  {
+    "id": 2533,
+    "title": "2025 강남대성 마에스트로 Trial Examination 물리학1 박남진T",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2568,
+    "title": "2025 이감 대학수학능력시험 파이널2 예비평가 국어",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "상품명에 시험 형식 명시",
+    "source_url": ""
+  },
+  {
+    "id": 2588,
+    "title": "2027 이감 간쓸개 파이널1 국어",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 2589,
+    "title": "2026 이감 간쓸개 6모대비실전연습 국어",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "공식 간쓸개 시리즈 설명과 대조",
+    "source_url": "https://yigam.co.kr/img/gssg_weekly_preview.pdf"
+  },
+  {
+    "id": 2606,
+    "title": "2026 메가스터디 강민철의 무제 국어 강민철T",
+    "previous_type": "개념",
+    "book_type": "주간지",
+    "reason": "공식 강민철 커리큘럼의 파이널 주간지와 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/mega_tcc/view.asp?tec_cd=megabori&tt_num=30045"
+  },
+  {
+    "id": 2621,
+    "title": "2026 메가스터디 킬링캠프 Killing Camp 파이널 수학 현우진T",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 킬링캠프 구성과 대조",
+    "source_url": "https://www.megastudy.net/teacher_v2/t_promotion/202606_pr/0604_math_hwj/main.asp"
+  },
+  {
+    "id": 2623,
+    "title": "2026 대성마이맥 서킷X CIRCUIT X 수학 시즌1",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 CIRCUIT 계열 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  },
+  {
+    "id": 2624,
+    "title": "2026 대성마이맥 서킷X CIRCUIT X 수학 시즌2",
+    "previous_type": "개념",
+    "book_type": "모의고사",
+    "reason": "공식 CIRCUIT 계열 설명과 대조",
+    "source_url": "https://campusm.dshw.co.kr/study/contents.do"
+  }
+]

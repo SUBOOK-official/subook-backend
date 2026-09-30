@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {PGlite} from '@electric-sql/pglite';
+const db=new PGlite();
+const migration=readFileSync(new URL('../supabase/migrations/20260930074813_book_type_classification_review.sql',import.meta.url),'utf8');
+const fixes=JSON.parse(readFileSync(new URL('./data/book-type-corrections-20260930.json',import.meta.url),'utf8'));
+const classify=async(title,subject=null)=>(await db.query('select _register_classify_book_type($1,$2) result',[title,subject])).rows[0].result;
+const register=async(newProducts,extra={})=>(await db.query('select admin_register_customer_inventory(1,$1::jsonb) result',[JSON.stringify({new_products:newProducts,...extra})])).rows[0].result;
+try {
+ await db.exec(`
+ create role anon; create role authenticated; create role service_role;
+ create schema auth;
+ create function auth.uid() returns uuid language sql stable as $$ select null::uuid $$;
+ create function is_admin_user() returns boolean language sql stable as $$ select coalesce(current_setting('app.admin',true),'true')='true' $$;
+ create table shipments(id bigint primary key); insert into shipments values(1);
+ create table products(id bigint generated always as identity primary key,group_key text unique,title text,option text,subject text,brand text,book_type text,published_year integer,instructor_name text,cover_image_url text,status text,updated_at timestamptz);
+ create sequence books_serial_number_seq;
+ create table books(id bigint generated always as identity primary key,shipment_id bigint,title text,option text,product_id bigint references products(id),book_type text,original_price integer,price integer,condition_grade text,cover_image_url text,inspection_image_urls text[],status text,is_public boolean,discount_type text,discount_value integer,inspected_at timestamptz,serial_number integer unique,location text);
+ create function _next_book_serial() returns integer language sql as $$select nextval('books_serial_number_seq')::integer$$;
+ create function storefront_product_group_key(text,text,text,text,text,integer,text) returns text language sql immutable as $$select concat_ws('|',$1,$2,$3,$4,$5,$6,$7)$$;
+ create function _register_compute_price(integer,text,integer) returns integer language sql immutable as $$select case when $2='amount' then greatest(0,$1-$3) when $2='rate' then round($1*(1-least(greatest($3,0),100)/100.0))::integer else $1 end$$;
+ `);
+ await db.exec(migration);
+ for(const item of fixes) assert.equal((await classify(item.title)).book_type,item.book_type,`수정 대상 #${item.id}`);
+ console.log('PASS: 감사 수정 대상 43종과 새 분류 규칙 일치');
+ for(const title of ['처음 보는 교재','2026 시대인재 플로우 수학','2026 시대인재 엣지 ATG','EBS 수능특강 수학','크럭스 국어','리바이벌 영어','기출 모의고사','개념 기출 완성','뉴런 워크북 포함 현우진','간쓸개 모의고사 세트','수분감 워크북','N제 주간지','간쓸개 에센셜','인강민철','월간 교재','워크북 모의고사']) {
+   assert.equal((await classify(title)).book_type,null,title);
+ }
+ assert.equal((await classify('시발점 수학 현우진T')).book_type,'개념');
+ assert.equal((await classify('시발점 워크북 수학 현우진T')).book_type,'워크북');
+ assert.equal((await classify('올쏘 기출 ALL')).book_type,'내신');
+ assert.equal((await classify('CRUX','수학')).book_type,'N제');
+ console.log('PASS: 미확인·혼합형·과목별 시리즈 및 본교재/워크북 구분');
+ const known={title:'2026 메가스터디 수분감 수학1 현우진T',original_price:20000,discount_type:'rate',discount_value:20,option:'1권, 2권',quantity:2};
+ const created=await register([known],{serial_start:100});
+ assert.equal(created.created_books,4);
+ assert.deepEqual(created.created_serials,[100,101,102,103]);
+ assert.equal((await db.query('select bool_and(book_type=\'기출\' and price=16000) ok from books')).rows[0].ok,true);
+ assert.equal((await db.query('select method from product_type_reviews')).rows[0].method,'rule');
+ const before=(await db.query('select count(*)::int n from books')).rows[0].n;
+ await assert.rejects(register([known,{title:'불명확 교재'}]),/유형을 확인/);
+ assert.equal((await db.query('select count(*)::int n from books')).rows[0].n,before);
+ await assert.rejects(register([{...known,book_type:'EBS'}]),/허용되지/);
+ await assert.rejects(register([{...known,book_type:'개념'}]),/근거/);
+ const manual={title:'혼합형 국어 교재',subject:'국어',book_type:'N제',book_type_confirmed:true,book_type_reviewed_title:'혼합형 국어 교재',book_type_reviewed_subject:'국어',book_type_review_note:'목차가 자작 문항 풀이 중심',quantity:1};
+ await assert.rejects(register([{...manual,book_type_reviewed_title:'과거 제목'}]),/다시 확인/);
+ await assert.rejects(register([{...manual,subject:'수학'}]),/다시 확인/);
+ await register([manual]);
+ assert.equal((await db.query("select count(*)::int n from product_type_reviews where method='manual'")).rows[0].n,1);
+ const added=await register([],{existing_additions:[{product_id:1,options:[{option:'3권',quantity:1,price:9000}]}]});
+ assert.equal(added.created_books,1);
+ assert.equal((await db.query('select book_type from books order by id desc limit 1')).rows[0].book_type,'기출');
+ console.log('PASS: 신규/기존 재고 유형 일치, 수량·할인·일련번호 보존, 미확인 배치 전체 롤백, 수동 근거 저장');
+ await db.exec("set app.admin='false'; set role authenticated;");
+ assert.equal((await db.query('select count(*)::int n from product_type_reviews')).rows[0].n,0);
+ await assert.rejects(db.query("select admin_classify_book_type('수분감')"),/Admin/);
+ await assert.rejects(db.query("select _register_resolve_book_type('{}')"),/permission denied/);
+ await assert.rejects(db.query("insert into product_type_reviews(product_id,title,book_type,method,evidence) values (1,'x','개념','manual','{}')"),/permission denied/);
+ await assert.rejects(register([known]),/Admin/);
+ console.log('PASS: 비관리자 분류/등록 차단, 검토 이력 RLS·직접 쓰기 차단');
+} finally { await db.close(); }

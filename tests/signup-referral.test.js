@@ -44,6 +44,7 @@ test('친구 초대: 가입 완료 시 동시 지급, 재시도, 권한 및 발�
       raw_user_meta_data='{"terms_agreed_at":"2026-10-01T00:00:00Z","privacy_agreed_at":"2026-10-01T00:00:00Z"}' where id=$1`, [uid(n)]);
     await add(1, 'email', true); // 출시 전 회원도 초대할 수 있지만 신규 혜택은 받을 수 없음
     await db.exec(migration('20261001042015_signup_referral_coupons'));
+    await db.exec(migration('20261001053820_single_use_signup_referrals'));
     await as(1);
     const code = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result.code;
     assert.match(code, /^[a-f0-9]{32}$/);
@@ -77,9 +78,15 @@ test('친구 초대: 가입 완료 시 동시 지급, 재시도, 권한 및 발�
       await attach(code);
       assert.equal(await count(), 2);
     });
-    await t.test('소셜 가입은 필수 동의 완료 시 지급하고 다른 친구를 초대하면 초대자는 추가 수령', async () => {
+    await t.test('한 번 지급한 초대 링크는 만료되고 초대받은 회원의 새 초대는 별도로 1회 가능', async () => {
+      assert.equal((await db.query('select public.get_signup_referral_offer($1) as result', [code])).rows[0].result.code_valid, false);
+      assert.equal((await db.query('select public.get_signup_referral_offer($1) as result', [code])).rows[0].result.code_expired, true);
       for (const [n, provider] of [[3, 'kakao'], [4, 'google']]) {
-        await add(n, provider); await as(n); await attach(code);
+        await as(n - 1);
+        const nextCode = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result.code;
+        await add(n, provider); await as(n);
+        await assert.rejects(attach(code), /사용할 수 없는/);
+        await attach(nextCode);
         assert.equal((await finish()).rows[0].result.status, 'pending');
         await db.query("select public.complete_oauth_signup(false, '테스트', '01000000000')");
         assert.equal((await finish()).rows[0].result.status, 'rewarded');
@@ -87,13 +94,16 @@ test('친구 초대: 가입 완료 시 동시 지급, 재시도, 권한 및 발�
       assert.equal(await count(), 6);
       await as(1);
       const summary = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result;
-      assert.equal(summary.reward_count, 3);
-      assert.deepEqual(Object.keys(summary).sort(), ['code', 'received_reward', 'reward_count']);
+      assert.equal(summary.reward_count, 1);
+      assert.equal(summary.can_invite, false);
+      assert.deepEqual(Object.keys(summary).sort(), ['can_invite', 'code', 'received_reward', 'reward_count']);
     });
     await t.test('가입 후 링크 소급 적용과 초대자 바꿔치기 차단', async () => {
       await add(5, 'email', true); await as(5);
       await assert.rejects(attach(code), /가입을 완료/);
-      await add(6); await as(6); await attach(code);
+      await as(4);
+      const nextCode = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result.code;
+      await add(6); await as(6); await attach(nextCode);
       await assert.rejects(attach('f'.repeat(32)), /다른 초대 링크/);
     });
     await t.test('두 번째 쿠폰 INSERT 실패 시 첫 쿠폰도 롤백, 회원가입 보존 후 재시도 가능', async () => {
@@ -108,15 +118,28 @@ test('친구 초대: 가입 완료 시 동시 지급, 재시도, 권한 및 발�
       assert.equal(await count(), 8);
     });
     await t.test('쿠폰 수량 소진/차단 회원은 한쪽만 지급되지 않음', async () => {
-      await add(7, 'google'); await as(7); await attach(code);
+      await as(6);
+      const nextCode = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result.code;
+      await add(7, 'google'); await as(7); await attach(nextCode);
       await db.exec("update coupons set total_quantity=issued_count where campaign_key='signup_referral_friend'");
       await db.query("select public.complete_oauth_signup(false, '테스트', '01000000000')");
       assert.equal((await finish()).rows[0].result.status, 'unavailable');
       assert.equal(await count(), 8);
       await db.exec('update coupons set total_quantity=null');
-      await db.query('update member_profiles set is_blocked=true where user_id=$1', [uid(1)]);
+      await db.query('update member_profiles set is_blocked=true where user_id=$1', [uid(6)]);
       assert.equal((await finish()).rows[0].result.status, 'unavailable');
       assert.equal(await count(), 8);
+    });
+    await t.test('여러 친구가 미리 링크를 연결해도 첫 완료만 두 장을 받고 나머지는 만료 처리', async () => {
+      await add(8, 'email', true); await as(8);
+      const nextCode = (await db.query('select public.get_my_signup_referral() as result')).rows[0].result.code;
+      for (const n of [9, 10]) { await add(n); await as(n); await attach(nextCode); }
+      await emailComplete(9); await emailComplete(10);
+      assert.equal(await count(), 10);
+      await as(10);
+      assert.equal((await finish()).rows[0].result.status, 'expired');
+      assert.equal((await db.query('select completed_at from member_referral_signups where invitee_id=$1', [uid(10)])).rows[0].completed_at !== null, true);
+      assert.equal((await db.query('select count(*) from member_coupons where user_id=$1', [uid(8)])).rows[0].count, 1);
     });
   } finally { await db.close(); }
 });

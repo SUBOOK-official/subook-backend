@@ -1,6 +1,22 @@
 # 휴대폰 인증과 회원 선택 통합 — 2026-10-01
 
-현재 상태: **2026-10-01 사용자 승인 후 운영 전환 완료.** DB migration 4개, Supabase Phone/SMS Hook, Vercel 비밀키, Data API 사전 검사 및 정책 플래그를 적용했다. 친구 초대 1회/링크 만료도 운영 중이다.
+현재 정책: **2026-10-01 사용자 정정 — 이메일 필수, 기존 이메일/비밀번호·카카오/구글 가입 유지, 번호 인증 추가.** 전화번호 단독 가입은 오해한 구현이므로 폐지한다. 1번호1계정·기존 회원 강제 인증·대표 선택 통합·친구 초대 1회는 유지한다.
+
+## 이메일 가입 복원
+
+- Migration `20261001080300_restore_email_signup_phone_verification.sql`: 가입 전 SMS 증명 전용 RLS 테이블, Before User Created SQL hook, 이메일 필수, OAuth 프로필 생성 지연, 인증된 카카오 번호 연결. 개인정보 삭제·고객 통합·금액 변경 없음.
+- 이메일 가입: SMS 증명 → 기존 이메일 OTP → 비밀번호·이름·약관 완료. 증명은 이메일에 묶이고 1회만 사용한다. metadata에 전화번호를 쓰는 것으로 우회할 수 없다.
+- OAuth: 내부 Auth 인증 레코드는 콜백에 필요하지만 회원 프로필은 번호 확인 뒤 생성한다. 이메일이 없는 OAuth도 신규 생성 hook에서 거부한다.
+- 카카오: 서버에서 `GET /v1/oidc/userinfo`, JWT의 Kakao identity와 `sub` 일치, `phone_number_verified=true`, 국내 번호 형식을 모두 확인한 경우 추가 SMS 생략. 미제공/연결 실패 시 SMS. 기존 OAuth 동의 스코프를 임의 변경하지 않았다. 실제 카카오 계정의 이 경로는 아직 E2E 확인하지 않았으며 API 모의 테스트로 검증했다.
+- Supabase 기본 Kakao provider는 현재 이메일/프로필 위주로 저장하며 전화번호를 매핑하지 않는다. 운영 Auth identities 650건 중 전화번호 필드가 있는 건은 0건이었다(2026-10-01 조사 시점).
+- 번호만으로 만들어진 실제 계정 1개는 보존한다. 복구 로그인 후 실제 이메일·비밀번호 등록을 강제한다. Phone provider는 복구용으로 유지하고 새 번호 계정 생성은 hook으로 차단한다.
+- Hook 설정: `hook_before_user_created_enabled=true`, `hook_before_user_created_uri=pg-functions://postgres/public/before_member_user_created`. 기존 SMS hook·OAuth·이메일 확인 설정 유지. DB `phone_signup_enabled=false`, `enabled/merge_enabled=true`.
+- 검증: frontend 273개, 신규 DB 정책 7개 및 기존 회귀 10개, lint/public/admin build, 모의 브라우저 이메일가입·복구게이트·통합. 운영 스키마에서 증명/가입/카카오 연결/쿠폰/통합 실행 후 트랜잭션 전체 롤백 성공. 실제 문자 재발송과 실제 고객 계정 통합은 하지 않았다.
+- 복구: hook 오류는 해당 hook만 해제하여 원인을 점검한다. 이메일 필수 화면과 고객 데이터/통합 원장은 보존한다. 전화번호 단독 가입 화면으로 되돌리지 않는다.
+
+공식 근거: [가입 생성 전 hook](https://supabase.com/docs/guides/auth/auth-hooks/before-user-created-hook), [SQL hook 권한·URI](https://supabase.com/docs/guides/auth/auth-hooks), [카카오 UserInfo](https://developers.kakao.com/docs/ko/kakaologin/rest-api#oidc-user-info), [Supabase Kakao provider](https://github.com/supabase/auth/blob/master/internal/api/provider/kakao.go).
+
+## 아래는 최초 운영 전환 이력 (이메일 관련 정책은 위 정정이 우선)
 
 운영 검증: 실제 SMS 수신·OTP 인증 성공, 인증되지 않은 중복 계정의 Data API 403, 실서비스 대표 선택 화면/마스킹/모바일 표시를 확인했다. 임시 계정은 자산이 없음을 확인 후 삭제했고 기존 회원은 통합하지 않았다. 실제 DB 스키마와 트리거의 통합/가입/초대 발급은 트랜잭션에서 실행 후 전체 롤백했다.
 
@@ -9,7 +25,7 @@
 ## 확정 정책
 
 - 초대 링크 첫 성공 때 초대자·친구 각 4,000원 동시 발급, 교재 30,000원 이상·발급 후 30일. 링크 재사용 보상 불가. 친구 본인의 초대 권리는 별도 1회.
-- 신규 가입은 국내 010 휴대폰 OTP → 이름/필수 약관. 이메일 인증·비밀번호는 신규 휴대폰 가입에 요구하지 않는다.
+- 신규 가입은 이메일 필수·기존 이메일/소셜 흐름에 국내 010 번호 인증을 추가한다. 번호 단독 가입 정책은 폐지했다.
 - 기존 이메일·카카오·구글 로그인 유지. 미인증 회원은 휴대폰 인증을 완료해야 이용 가능.
 - 인증된 번호는 한 활성 계정만 소유. 입력 phone과 실제 인증 소유권은 별도이며 전환 당시 기존 번호만 통합 후보로 보존한다.
 - 같은 번호의 계정은 각각 로그인 확인 후 회원이 대표 계정 선택. 번호 일치만으로 타 계정의 주문·포인트를 보여주거나 옮기지 않는다.

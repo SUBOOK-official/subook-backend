@@ -16,6 +16,8 @@
 
 검증: 신규 정책 DB 테스트(카카오 정상/동일 계정 재로그인/구글 중복 SMS/카카오 중복/이메일 사전 차단/경쟁/기존 통합/정상 가입/초대 보상), 모의 브라우저 이메일 중복·구글 SMS 중복·카카오 번호 제공/미제공/중복·모바일, 운영 스키마 롤백 검증.
 
+운영 완료: Backend `6b07239`, Frontend `1f037d9`, production `dpl_41yLYP2sYnEhZQpG54KPV4SkzBFj` READY / production. 적용 migration 이력 확인, 설치된 함수로 중복 SMS/사전 가입 hook/직접 통합 차단을 실행 후 전체 롤백, 운영 Auth의 이메일/번호 없는 가입 거부 확인. 배포 번들 모의 브라우저 검증과 데스크톱/모바일 시각 확인 통과. 실제 카카오 계정 로그인 및 이번 정정 후 실제 SMS 재발송은 하지 않았다.
+
 ### 앞선 이메일 필수 전환 이력
 
 2026-10-01 운영 적용 완료: Backend `54cf3a0`, Frontend `1e827cb`, production `dpl_J3Hxbf9ctyyehfVTcMVA2tYdx9uU` — READY / production. 신규 migration 적용 이력 및 Auth hook 설정을 다시 읽어 확인했다. 실제 Auth API에서 번호 증명 없는 이메일 가입과 이메일 없는 번호 가입이 모두 400으로 생성 전에 거부됐다. 검증 중 문자/이메일은 발송하지 않았고 새 테스트 계정도 남지 않았다.

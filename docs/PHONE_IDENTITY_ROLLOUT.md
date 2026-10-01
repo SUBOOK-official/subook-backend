@@ -4,6 +4,8 @@
 
 ## 이메일 가입 복원
 
+2026-10-01 운영 적용 완료: Backend `54cf3a0`, Frontend `1e827cb`, production `dpl_J3Hxbf9ctyyehfVTcMVA2tYdx9uU` — READY / production. 신규 migration 적용 이력 및 Auth hook 설정을 다시 읽어 확인했다. 실제 Auth API에서 번호 증명 없는 이메일 가입과 이메일 없는 번호 가입이 모두 400으로 생성 전에 거부됐다. 검증 중 문자/이메일은 발송하지 않았고 새 테스트 계정도 남지 않았다.
+
 - Migration `20261001080300_restore_email_signup_phone_verification.sql`: 가입 전 SMS 증명 전용 RLS 테이블, Before User Created SQL hook, 이메일 필수, OAuth 프로필 생성 지연, 인증된 카카오 번호 연결. 개인정보 삭제·고객 통합·금액 변경 없음.
 - 이메일 가입: SMS 증명 → 기존 이메일 OTP → 비밀번호·이름·약관 완료. 증명은 이메일에 묶이고 1회만 사용한다. metadata에 전화번호를 쓰는 것으로 우회할 수 없다.
 - OAuth: 내부 Auth 인증 레코드는 콜백에 필요하지만 회원 프로필은 번호 확인 뒤 생성한다. 이메일이 없는 OAuth도 신규 생성 hook에서 거부한다.

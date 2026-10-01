@@ -104,6 +104,8 @@ Supabase CLI dry-run은 적용 목록만 확인하며 SQL 실행 검증은 하�
 
 검증: 관련 DB 47개·frontend 273개·lint/public build 통과. 운영 스키마에서 임시 Auth/identity/OTP 데이터를 만들고 인증 전/후·만료·틀린 코드·회원가입 증명·비공개 권한을 확인한 뒤 트랜잭션 전체 롤백했다. 실제 회원 계정은 테스트에 사용하지 않았다.
 
+운영 적용 완료: Backend `1ab2cd9`, Frontend `e15136f`, production `dpl_2CDrhxVFSx8xZQ2eszj7ewmCoa9u` READY / production. 해당 migration만 dry-run 후 적용했으며 설치된 함수의 권한·인증 조건을 다시 롤백 검증했다. 배포 번들에서도 PC/390/320px·단일/복수 계정·이메일 안내 보존·소셜 로그인 이동·비밀번호 찾기·로그아웃 실패 및 기존 가입 분기를 모의 API로 확인했다. 실제 OAuth 제공자 로그인 완료는 미검증이다.
+
 ### 2026-10-01 Google 로그인 후 번호 인증 → 통합 불가 오류
 
 운영 Postgres 로그의 10:35:48 UTC 오류와 직전 번호 증명을 대조했다. 현재 계정은 관리자 권한을 함께 가진 기존 회원이었다. `_claim_member_phone`은 생성 시각만으로 `merge_required`를 반환했지만, `start_member_account_merge`는 관리자 보호 조건으로 현재 계정을 후보에서 제외해 “통합할 수 없는 계정입니다.”를 반환했다.

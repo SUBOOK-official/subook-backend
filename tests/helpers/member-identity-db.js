@@ -14,7 +14,8 @@ export async function makeIdentityDb({seedVerifiedDuplicates=false}={}) {
     create function auth.jwt() returns jsonb language sql as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{}'::jsonb) $$;
     grant usage on schema auth to anon,authenticated,service_role;
     create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,phone text unique,phone_confirmed_at timestamptz,
-      encrypted_password text,raw_app_meta_data jsonb,raw_user_meta_data jsonb default '{}',created_at timestamptz default now(),last_sign_in_at timestamptz default now());
+      encrypted_password text,raw_app_meta_data jsonb,raw_user_meta_data jsonb default '{}',created_at timestamptz default now(),last_sign_in_at timestamptz default now(),deleted_at timestamptz);
+    create table auth.identities(user_id uuid references auth.users(id),provider text);
     create table public.member_profiles(user_id uuid primary key references auth.users(id),email text unique,name text,nickname text,phone text,
       marketing_opt_in boolean default false,marketing_agreed_at timestamptz,terms_agreed_at timestamptz,privacy_agreed_at timestamptz,
       email_verified_at timestamptz,withdrawal_requested_at timestamptz,withdrawal_scheduled_at timestamptz,personal_data_erased_at timestamptz,is_blocked boolean default false,

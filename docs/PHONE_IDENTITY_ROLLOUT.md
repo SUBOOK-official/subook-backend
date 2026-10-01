@@ -96,6 +96,14 @@ Supabase CLI dry-run은 적용 목록만 확인하며 SQL 실행 검증은 하�
 
 ## 장애 시
 
+### 번호 인증 후 기존 계정 힌트 (2026-10-01)
+
+`20261001110924_verified_phone_account_hints.sql`: 기존 계정 안내가 모호하다는 사용자 피드백으로 이메일 일부와 로그인 수단을 반환한다. `get_my_member_identity()`에서 현재 사용자의 유효한 번호 증명·중복 상태를 확인한 경우에만 `existing_accounts`를 포함하며, 가입 전에는 `verify_signup_phone_challenge()`의 비밀값·OTP 성공 응답에만 포함한다.
+
+비공개 `_member_existing_phone_accounts`는 인증된 번호 소유자가 있으면 그 계정만 선택한다. 없으면 현재 유효한 기존 번호 기록을 가진 계정을 최대 5개 반환한다. 본인·삭제·탈퇴·차단·통합 원 계정과 다른 인증 번호가 있는 과거 기록은 제외한다. 전체 이메일·사용자 ID·전화번호·주문/포인트·관리자 여부를 반환하지 않는다. 내부 임시 이메일은 숨긴다. 실제 `auth.identities`와 비밀번호 유무로 로그인 방법을 결정하며, 최초 provider metadata를 추측에 쓰지 않는다. 기존 grants/RLS를 약화하지 않으며 회원/번호/통합 이력은 변경하지 않는다.
+
+검증: 관련 DB 47개·frontend 273개·lint/public build 통과. 운영 스키마에서 임시 Auth/identity/OTP 데이터를 만들고 인증 전/후·만료·틀린 코드·회원가입 증명·비공개 권한을 확인한 뒤 트랜잭션 전체 롤백했다. 실제 회원 계정은 테스트에 사용하지 않았다.
+
 ### 2026-10-01 Google 로그인 후 번호 인증 → 통합 불가 오류
 
 운영 Postgres 로그의 10:35:48 UTC 오류와 직전 번호 증명을 대조했다. 현재 계정은 관리자 권한을 함께 가진 기존 회원이었다. `_claim_member_phone`은 생성 시각만으로 `merge_required`를 반환했지만, `start_member_account_merge`는 관리자 보호 조건으로 현재 계정을 후보에서 제외해 “통합할 수 없는 계정입니다.”를 반환했다.

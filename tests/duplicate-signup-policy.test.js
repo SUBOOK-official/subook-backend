@@ -15,6 +15,7 @@ test('신규 중복 번호 가입 차단과 기존 계정 로그인 안내',asyn
     await db.exec(migration('20261001080300_restore_email_signup_phone_verification'));
     await db.exec(migration('20261001091226_reject_duplicate_phone_signup'));
     await db.exec(migration('20261001104338_align_phone_merge_eligibility'));
+    await db.exec(migration('20261001110924_verified_phone_account_hints'));
     await t.test('이메일과 카카오 인증 번호로 회원 생성·같은 계정 재로그인 허용',async()=>{
       await account(601,'kakao');assert.equal(await hasProfile(601),false);
       assert.equal((await rpc('claim_kakao_member_phone($1,$2)',[uid(601),'01033330001'])).status,'verified');

@@ -1,6 +1,10 @@
 # 휴대폰 인증과 회원 선택 통합 — 2026-10-01
 
-현재 상태: 구현/로컬 검증 완료, 운영 DB와 인증 설정은 미변경. 친구 초대 1회/링크 만료는 별도 배포 완료.
+현재 상태: **2026-10-01 사용자 승인 후 운영 전환 완료.** DB migration 4개, Supabase Phone/SMS Hook, Vercel 비밀키, Data API 사전 검사 및 정책 플래그를 적용했다. 친구 초대 1회/링크 만료도 운영 중이다.
+
+운영 검증: 실제 SMS 수신·OTP 인증 성공, 인증되지 않은 중복 계정의 Data API 403, 실서비스 대표 선택 화면/마스킹/모바일 표시를 확인했다. 임시 계정은 자산이 없음을 확인 후 삭제했고 기존 회원은 통합하지 않았다. 실제 DB 스키마와 트리거의 통합/가입/초대 발급은 트랜잭션에서 실행 후 전체 롤백했다.
+
+배포: Frontend `e5b688d`, Backend `b2c340f`. Production `dpl_jm6j4PTfiDSqsCxY7XyrFdyEx1Vq` — READY. 현재 `enabled`, `phone_signup_enabled`, `merge_enabled` 모두 true.
 
 ## 확정 정책
 
@@ -14,7 +18,7 @@
 
 ## 확인한 운영 현황
 
-읽기 전용 집계: 회원 1,238명 / 번호 없음 57 / 잘못된 번호 9 / 기존 OTP 인증 47 / 번호 중복 30그룹·63계정. 운영 전환 직전에 `scripts/audit-phone-account-migration.mjs`를 재실행한다. 이 스크립트는 개인정보/키를 출력하지 않는다.
+전환 직전 집계: 회원 1,238명 / 번호 없음 57 / 잘못된 번호 9 / 기존 OTP 인증 47 / 번호 중복 30그룹·63계정. 인증된 번호에도 1그룹·2계정 중복이 있어 단독 인증 45계정만 자동 승계했다. 중복 2계정은 인증 증거를 보존하고 재인증 후 회원 선택으로 통합한다. 조사 스크립트 `scripts/audit-phone-account-migration.mjs`는 개인정보/키를 출력하지 않는다.
 
 ## 데이터 및 접근 제어
 
@@ -31,7 +35,7 @@
 
 ## 운영 전환 승인 후 순서
 
-루트 `AGENTS.md`의 자동 ship hard-stop에 해당: 새 환경 변수, 인증 서비스 설정, 광범위한 회원 계정 통합. 승인 전에는 아래 적용 단계를 실행하지 않는다.
+루트 `AGENTS.md`의 자동 ship hard-stop에 해당했던 새 환경 변수·인증 서비스 설정·회원 계정 통합은 2026-10-01 사용자가 운영 전환을 명시 승인했다. 아래는 실제 적용 순서 및 재현 절차다.
 
 1. 최신 계정 집계와 양 repo 상태 확인. 타 세션 미추적 SQL을 포함하지 않는다.
 2. 아래 4개 migration을 한 묶음으로 dry-run한 뒤 같은 해시의 파일만 적용:
@@ -39,7 +43,7 @@
    - `20261001060422_phone_identity_enforcement.sql`
    - `20261001060424_member_selected_account_merge.sql`
    - `20261001060942_phone_verified_referral_rewards.sql`
-3. Frontend Production에 `SUPABASE_SEND_SMS_HOOK_SECRET` 신규 등록. Supabase가 발급한 Send SMS Hook 서명 비밀키를 사용하며 화면/로그/커밋에 기록하지 않는다. 기존 SOLAPI/Supabase 서비스 키는 재사용.
+3. Frontend Production에 `SUPABASE_SEND_SMS_HOOK_SECRET` 신규 등록. 표준 `v1,whsec_` 형식의 새 32바이트 난수 서명 키를 생성해 Supabase와 동일하게 설정하며 화면/로그/커밋에 기록하지 않는다. 기존 SOLAPI/Supabase 서비스 키는 재사용.
 4. Supabase Phone provider 활성화, SMS 자동 확인 OFF, OTP 만료 300초. Send SMS Hook의 URI를 `https://subook.kr/api/auth/phone-sms-hook`으로 연결하고 동일한 서명 비밀키 사용. 이메일 자동 확인을 켜지 않는다.
 5. 양 repo 검증·명시 파일 commit/push 후 루트 `npm run deploy:public`. Production `READY` 확인. 관리자 앱의 배포는 필요 없음.
 6. 기존 PostgREST pre-request 설정 확인(2026-10-01 현재 없음). 다른 설정이 생겼다면 덮어쓰지 말고 합성 검토. `authenticator`의 `pgrst.db_pre_request=public.enforce_member_identity_request`를 설정하고 `NOTIFY pgrst, 'reload config'`.
@@ -52,7 +56,9 @@
 node backend/scripts/apply-reviewed-migration.mjs 20261001054602_phone_member_identity.sql,20261001060422_phone_identity_enforcement.sql,20261001060424_member_selected_account_merge.sql,20261001060942_phone_verified_referral_rewards.sql dry-run
 ```
 
-Supabase CLI dry-run은 적용 목록만 확인하며 SQL 실행 검증은 하지 않는다. SQL 실행은 PGlite 테스트로 확인했으며 실제 운영 schema/트리거에서의 통합은 활성화 후 별도 검증이 필요하다.
+Supabase CLI dry-run은 적용 목록만 확인하며 SQL 실행 검증은 하지 않는다. SQL은 PGlite 테스트와 실제 운영 스키마의 롤백 트랜잭션으로 검증했다.
+
+운영 전환에서 발견한 차이: `complete_member_auth_sms_hook()`은 void RPC라 PostgREST가 204/빈 본문을 반환한다. 발송 성공 후 JSON 파싱 실패로 인증이 취소되지 않도록 빈 응답을 허용하고 테스트에 204 응답을 사용한다. 첫 실제 발송에서 발견 후 플래그를 일시 해제해 수정 배포했고, 두 번째 발송/OTP 검증 성공 후 정상 운영 상태를 확인했다.
 
 ## 장애 시
 
@@ -64,5 +70,7 @@ Supabase CLI dry-run은 적용 목록만 확인하며 SQL 실행 검증은 하�
 
 - PGlite: OTP 실패 횟수, 직접 변조, 번호 중복, hook 예약/멱등, 재로그인 소유 증명, 타인 정보 차단, 실패 시 전체 롤백, 자산 보존, 쿠폰 동시 발급/만료, 환불 복원, 개인정보 파기.
 - API 모의 테스트: 표준 webhook 원문 서명/시간 검증, 무서명 발송 차단, 중복 발송 차단, 실패 응답, JWT/서버 인증 번호만 Auth 연결.
-- 브라우저 모의 E2E: 신규 휴대폰 OTP→약관(비밀번호 없음), 오입력, 기존 회원 강제 인증→통합, desktop/mobile overflow 및 런타임 오류 없음. 실제 SMS 발송과 실제 고객 통합은 실행하지 않음.
+- 브라우저 모의 E2E: 신규 휴대폰 OTP→약관(비밀번호 없음), 오입력, 기존 회원 강제 인증→통합, 기존 이메일 미인증 계정의 휴대폰 전환, desktop/mobile overflow 및 런타임 오류 없음.
+- 운영 E2E: 사용자에게 동의받은 번호의 SMS 수신→OTP 확인→기존 계정 통합 후보 화면. 기존 계정의 상세 자산은 로그인 전 비공개, 통합 버튼 비활성 확인. 고객 계정 통합은 실행하지 않음. 테스트 계정/미제출 통합 요청 정리 완료.
+- 최종 검증: frontend 271개, backend 18개, lint/public/admin build 통과. 운영 발송 서명 검증/204 완료 응답 및 신규 가입 페이지 확인.
 - 공식 근거: [Phone Auth](https://supabase.com/docs/guides/auth/phone-login), [Send SMS Hook](https://supabase.com/docs/guides/auth/auth-hooks/send-sms-hook), [Data API 보안](https://supabase.com/docs/guides/api/securing-your-api), [JWT 인증 증거](https://supabase.com/docs/guides/auth/jwt-fields), [전화번호 확인](https://supabase.com/docs/reference/javascript/auth-admin-updateuserbyid), [표준 webhook](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md), [Vercel Web Request](https://vercel.com/docs/functions/runtimes/node-js).

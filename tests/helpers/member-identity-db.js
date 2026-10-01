@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 
 export const uid = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 export const migration = (name) => readFileSync(new URL(`../../supabase/migrations/${name}.sql`, import.meta.url), 'utf8');
-export async function makeIdentityDb() {
+export async function makeIdentityDb({seedVerifiedDuplicates=false}={}) {
   const db = new PGlite({ extensions: { pgcrypto } });
   await db.exec(`
     create role anon; create role authenticated; create role service_role; create schema auth; create schema extensions;
@@ -62,6 +62,13 @@ export async function makeIdentityDb() {
   await db.exec('create trigger sync_profile after insert or update on auth.users for each row execute function public.sync_member_profile_from_auth()');
   await db.exec(migration('20261001042015_signup_referral_coupons'));
   await db.exec(migration('20261001053820_single_use_signup_referrals'));
+  if(seedVerifiedDuplicates){
+    for(const n of [90,91,92]){
+      await db.query('insert into auth.users(id,email) values($1,$2)',[uid(n),`legacy${n}@example.invalid`]);
+      await db.query('update member_profiles set phone=$2,verified_phone=$3,phone_verified_at=now() where user_id=$1',
+        [uid(n),n===92?'01099999998':'01099999999',n===91?'+821099999999':n===92?'01099999998':'01099999999']);
+    }
+  }
   await db.exec(migration('20261001054602_phone_member_identity'));
   await db.exec(migration('20261001060422_phone_identity_enforcement'));
   await db.exec(migration('20261001060424_member_selected_account_merge'));

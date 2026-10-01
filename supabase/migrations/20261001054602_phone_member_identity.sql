@@ -73,8 +73,11 @@ language sql immutable set search_path='' as $$
     else regexp_replace(coalesce(p_phone,''),'[^0-9]','','g') end;
 $$;
 insert into public.member_legacy_phone_accounts(user_id,phone)
-select user_id,public.normalize_member_phone(phone) from public.member_profiles
-where public.normalize_member_phone(phone) ~ '^010[0-9]{8}$';
+select user_id,public.normalize_member_phone(case when phone_verified_at is not null
+  and public.normalize_member_phone(verified_phone) ~ '^010[0-9]{8}$' then verified_phone else phone end)
+from public.member_profiles
+where public.normalize_member_phone(phone) ~ '^010[0-9]{8}$'
+  or (phone_verified_at is not null and public.normalize_member_phone(verified_phone) ~ '^010[0-9]{8}$');
 create function public.get_member_identity_policy() returns jsonb
 language sql stable security definer set search_path='' as $$
   select jsonb_build_object('enabled',enabled,'phone_signup_enabled',phone_signup_enabled,'merge_enabled',merge_enabled)
@@ -154,17 +157,15 @@ $$;
 create trigger zy_sync_confirmed_auth_phone after insert or update of phone,phone_confirmed_at on auth.users
   for each row execute function public.sync_confirmed_auth_phone();
 
--- 기존 인증 증거만 승계. 미인증 phone 입력값은 소유권으로 취급하지 않는다.
-do $$ begin
-  if exists(select 1 from public.member_profiles where phone_verified_at is not null
-    and public.normalize_member_phone(verified_phone) ~ '^010[0-9]{8}$'
-    group by public.normalize_member_phone(verified_phone) having count(*)>1) then
-    raise exception '기존 인증 번호가 중복되어 자동 승계할 수 없습니다.';
-  end if;
-end $$;
+-- 단독으로 인증된 번호만 승계한다. 과거 인증 번호도 중복이면 재인증/대표 선택으로 해결한다.
+-- 기존 인증 필드를 지우거나 특정 계정을 임의로 대표로 지정하지 않는다.
 insert into public.member_phone_identities(phone,user_id,verified_at)
-select public.normalize_member_phone(verified_phone),user_id,phone_verified_at from public.member_profiles
-where phone_verified_at is not null and public.normalize_member_phone(verified_phone) ~ '^010[0-9]{8}$';
+select phone,user_id,phone_verified_at from (
+  select public.normalize_member_phone(verified_phone) phone,user_id,phone_verified_at,
+    count(*) over(partition by public.normalize_member_phone(verified_phone)) as owners
+  from public.member_profiles where phone_verified_at is not null
+    and public.normalize_member_phone(verified_phone) ~ '^010[0-9]{8}$'
+) verified where owners=1;
 
 create or replace function public.verify_phone_otp(p_code text) returns jsonb
 language plpgsql security definer set search_path='' as $$

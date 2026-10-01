@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { makeIdentityDb, uid } from './helpers/member-identity-db.js';
 
+test('기존 인증 번호가 중복이면 임의 승계 없이 대표 선택 후보로 보존한다',async()=>{
+  const db=await makeIdentityDb({seedVerifiedDuplicates:true});
+  try{
+    const owners=(await db.query('select user_id from member_phone_identities')).rows;
+    assert.deepEqual(owners.map(x=>x.user_id),[uid(92)]);
+    assert.equal(Number((await db.query("select count(*) from member_legacy_phone_accounts where phone='01099999999'")).rows[0].count),2);
+    assert.equal(Number((await db.query('select count(*) from member_profiles where phone_verified_at is not null')).rows[0].count),3);
+    await db.query("select set_config('test.uid',$1,false)",[uid(90)]);
+    assert.equal((await db.query('select public.member_identity_is_ready() ready')).rows[0].ready,false);
+    assert.equal((await db.query("select public._claim_member_phone($1,'01099999999') result",[uid(90)])).rows[0].result.status,'merge_required');
+    assert.equal((await db.query('select public.start_member_account_merge() result')).rows[0].result.accounts.length,2);
+  }finally{await db.close();}
+});
+
 test('휴대폰 정책·인증·대표 계정 통합', async (t) => {
   const db = await makeIdentityDb();
   const as = (n) => db.query("select set_config('test.uid',$1,false)", [n ? uid(n) : '']);

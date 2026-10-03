@@ -152,6 +152,31 @@ try {
   await assert.rejects(db.exec('select * from get_banner_copy_sources()'),/permission denied/);
   assert.deepEqual(await scalar('select get_public_hero_products()'),[]);
   await db.exec('reset role');
+  // 테마 문맥은 UI 메타데이터다. 다른 분류의 선정 교재도 원래 순서대로 보존한다.
+  await db.query('update content_themes set is_enabled=true where id=$1', [themeId]);
+  const themeBeforeContext = await scalar('select get_public_theme_page($1,48,0)', [themeId]);
+  await db.exec(read('20261003154147_theme_filter_context.sql'));
+  await db.query('update content_themes set description=$2, filter_context=$3 where id=$1',
+    [themeId, '관 소개', { brands: '시대인재', years: '2027' }]);
+  const themeAfterContext = await scalar('select get_public_theme_page($1,48,0)', [themeId]);
+  assert.deepEqual(themeAfterContext.products, themeBeforeContext.products);
+  assert.equal(themeAfterContext.total_count, themeBeforeContext.total_count);
+  assert.deepEqual(themeAfterContext.theme.filter_context, { brands: '시대인재', years: '2027' });
+  assert.equal(themeAfterContext.theme.description, '관 소개');
+  for (const invalid of [{ brands: [] }, { subject: null }, { unknown: '값' }, [], { years: '' }]) {
+    await assert.rejects(db.query('update content_themes set filter_context=$2 where id=$1', [themeId, invalid]), /check constraint/);
+  }
+  await db.exec('set role anon');
+  assert.equal((await scalar('select get_public_theme_page($1)', [themeId])).theme.description, '관 소개');
+  await assert.rejects(db.query('update content_themes set description=$2 where id=$1', [themeId, '변조']), /permission denied/);
+  await db.exec("reset role; set role authenticated; select set_config('test.admin','false',false)");
+  assert.equal((await db.query('update content_themes set description=$2 where id=$1 returning id', [themeId, '변조'])).rows.length, 0);
+  await db.exec("select set_config('test.admin','true',false)");
+  assert.equal((await db.query('update content_themes set description=$2 where id=$1 returning id', [themeId, '관리자 수정'])).rows.length, 1);
+  await db.query('update content_themes set is_enabled=false where id=$1', [themeId]);
+  assert.equal(await scalar('select get_public_theme_page($1)', [themeId]), null);
+  await db.exec('reset role');
   console.log('PASS: sold-out/tied recommendation order, independent banner selection/copy, no automatic refill, literal multi-field search, complete 1110-match pagination, anon/member/admin permissions');
+  console.log('PASS: theme context preserves curated products/pagination, rejects malformed metadata, public read/admin-only writes, disabled themes stay private');
   console.log('PASS: unchanged catalog, server ranking/pagination, year/search/instructor filters, 8 available banners, 100+ product themes, missing/hidden/duplicate products, anon/member/admin RLS, private helper privilege, stale write conflict');
 } finally { await db.close(); }

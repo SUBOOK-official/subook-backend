@@ -20,11 +20,12 @@ test('번호 인증 후 계정 찾기 안내의 권한·마스킹·실제 로그
   try {
     await db.exec('create role supabase_auth_admin');
     for (const name of ['20261001080300_restore_email_signup_phone_verification', '20261001091226_reject_duplicate_phone_signup',
-      '20261001104338_align_phone_merge_eligibility', '20261001110924_verified_phone_account_hints']) await db.exec(migration(name));
+      '20261001104338_align_phone_merge_eligibility', '20261001110924_verified_phone_account_hints',
+      '20261004161015_remember_verified_account_login']) await db.exec(migration(name));
     await account(800, 'subook.owner@example.invalid', ['kakao']);
     await rpc('claim_kakao_member_phone($1,$2)', [uid(800), '01055550001']);
     await account(801, 'requester@example.invalid', ['google']); await as(801);
-    await t.test('인증 전·만료·잘못된 코드는 다른 계정 힌트를 반환하지 않음', async () => {
+    await t.test('인증 전·잘못된 코드는 힌트 차단, 이미 확인한 계정 안내만 만료 뒤에도 유지', async () => {
       assert.deepEqual((await rpc('get_my_member_identity()')).existing_accounts, []);
       await db.query("update auth.users set raw_user_meta_data='{\"phone\":\"01055550001\",\"phone_verified\":true}' where id=$1", [uid(801)]);
       assert.deepEqual((await rpc('get_my_member_identity()')).existing_accounts, []);
@@ -37,7 +38,10 @@ test('번호 인증 후 계정 찾기 안내의 권한·마스킹·실제 로그
       assert.ok(!JSON.stringify(result).includes('subook.owner'));
       assert.ok(!JSON.stringify(result).includes(uid(800)));
       await db.query("update member_phone_proofs set expires_at=now()-interval '1 second' where user_id=$1", [uid(801)]);
-      assert.deepEqual((await rpc('get_my_member_identity()')).existing_accounts, []);
+      const remembered = await rpc('get_my_member_identity()');
+      assert.deepEqual(remembered.existing_accounts, result.existing_accounts);
+      assert.equal(remembered.existing_account_remembered, true);
+      assert.equal(remembered.can_merge, false);
     });
     await t.test('실제 연결된 복수 로그인 수단을 안내하고 단순 provider metadata는 추측하지 않음', async () => {
       await rpc('claim_kakao_member_phone($1,$2)', [uid(801), '01055550001']);

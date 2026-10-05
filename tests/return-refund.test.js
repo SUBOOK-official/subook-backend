@@ -11,7 +11,7 @@ async function query(sql, params = []) { return (await db.query(sql, params)).ro
 async function rpc(name, args = []) {
   return (await query(`select public.${name}(${args.map((_, i) => `$${i + 1}`).join(",")}) as result`, args))[0].result;
 }
-async function fixture({ total = 23000, shipping = 3000, method = "card", status = "delivered", prices = [10000, 10000], settled = false, coupon = false } = {}) {
+async function fixture({ total = 23000, shipping = 3000, method = "card", status = "delivered", prices = [10000, 10000], settled = false, coupon = false, settlements = true } = {}) {
   const id = nextId++;
   await query(`insert into orders(id,order_number,user_id,status,total_amount,shipping_fee,subtotal,payment_method,payment_key,pg_provider,applied_member_coupon_id)
     values($1,$2,$3,$4,$5,$6,$7,$8,$9,'nicepay',$10)`, [id,`TEST-${id}`,buyerId,status,total,shipping,prices.reduce((a,b)=>a+b,0),method,method === "card" ? `tid-${id}` : null,coupon ? id : null]);
@@ -22,7 +22,7 @@ async function fixture({ total = 23000, shipping = 3000, method = "card", status
     ids.push(itemId);
     await query("insert into books(id,status,is_public) values($1,'reserved',false)",[itemId]);
     await query("insert into order_items(id,order_id,book_id,title,total_price) values($1,$2,$1,'시험용 교재',$3)",[itemId,id,price]);
-    await query("insert into settlements(order_id,book_id,status) values($1,$2,$3)",[id,itemId,settled ? "completed" : "pending"]);
+    if (settlements) await query("insert into settlements(order_id,book_id,status) values($1,$2,$3)",[id,itemId,settled ? "completed" : "pending"]);
   }
   return { id, ids };
 }
@@ -41,11 +41,24 @@ before(async () => {
       payment_method text,payment_key text,pg_provider text,payment_status text default 'paid',refunded_amount integer default 0,
       applied_member_coupon_id bigint,refund_requested_at timestamptz,refund_request_reason text,refund_request_resolved_at timestamptz,
       refunded_at timestamptz,refund_reason text,updated_at timestamptz,auto_confirm_at timestamptz,confirmed_at timestamptz,tracking_number text,points_used integer default 0);
-    create table books(id bigint primary key,status text,is_public boolean);
+    create table books(id bigint primary key,status text,is_public boolean,shipment_id bigint,condition_grade text);
     create table order_items(id bigint primary key,order_id bigint references orders(id),book_id bigint references books(id),title text,total_price integer,
-      refunded_at timestamptz,refund_amount integer,refund_reason text,restock_held_at timestamptz);
+      refunded_at timestamptz,refund_amount integer,refund_reason text,restock_held_at timestamptz,quantity integer default 1,unit_price integer);
     create table settlements(id bigint generated always as identity,order_id bigint,book_id bigint,status text,cancelled_at timestamptz,
-      recovery_required_at timestamptz,refund_reason text,updated_at timestamptz);
+      recovery_required_at timestamptz,refund_reason text,updated_at timestamptz,
+      seller_user_id uuid,order_item_id bigint,sale_amount integer,fee_percent numeric,fee_amount integer,net_amount integer,box_cost_deducted integer,
+      scheduled_date date,bank_name text,account_number text,account_number_ciphertext text,account_number_last4 text,account_holder text,
+      unique(order_id,book_id));
+    create table shipments(id bigint primary key,user_id uuid,pickup_date date,fee_policy_version text,is_direct_purchase boolean default false,
+      settlement_bank_name text,settlement_account_number_ciphertext text,settlement_account_last4 text,settlement_account_holder text,
+      box_count integer default 0,box_cost_charged integer default 0);
+    create table member_settlement_accounts(id bigint,user_id uuid,is_default boolean,created_at timestamptz,
+      bank_name text,account_number text,account_number_ciphertext text,account_number_last4 text,account_holder text);
+    create table manual_settlements(book_id bigint,status text);
+    create function get_account_last4(text) returns text language sql as $$select right($1,4)$$;
+    create function mask_account_number(text) returns text language sql as $$select '****'||$1$$;
+    create function calculate_settlement_fee_percent(integer,date,text) returns numeric language sql as $$select 45::numeric$$;
+    create function next_settlement_date(timestamptz) returns date language sql as $$select (date_trunc('month',$1)+interval '1 month')::date$$;
     create table member_coupons(id bigint primary key,used_at timestamptz,used_order_id bigint,status text,expires_at timestamptz,updated_at timestamptz);
     create table reviews(id bigint primary key,order_id bigint);
     create table point_lots(id bigint primary key,user_id uuid,remaining integer,expires_at timestamptz,voided_at timestamptz,void_reason text,review_id bigint);
@@ -64,6 +77,7 @@ before(async () => {
   for(const [file,names] of [
     ['20260902111905_member_points.sql',['restore_points_for_order','reclaim_review_points','sync_points_on_order_status']],
     ['20260902044155_return_hold_release_guard.sql',['release_books_on_order_cancel']],
+    ['20260824063025_return_pickup_flow.sql',['books_assert_no_active_order_on_discard']],
   ]){
     const source=await readFile(new URL(`../supabase/migrations/${file}`,import.meta.url),'utf8');
     for(const name of names){
@@ -72,9 +86,13 @@ before(async () => {
     }
   }
   await db.exec(`create trigger trg_orders_sync_points after update of status on orders for each row execute function sync_points_on_order_status();
+    create trigger guard_discard before update on books for each row execute function books_assert_no_active_order_on_discard();
     create trigger trg_release_books_on_order_cancel after update of status on orders for each row execute function release_books_on_order_cancel();`);
   await db.exec(await readFile(new URL("../supabase/migrations/20260914080709_return_inspection_before_refund.sql",import.meta.url),"utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20260916034948_add_no_return_refund_flow.sql",import.meta.url),"utf8"));
+  const settlementSource=await readFile(new URL("../supabase/migrations/20260910054749_pickup_fee_policy_versions.sql",import.meta.url),"utf8");
+  await db.exec(settlementSource.match(/CREATE OR REPLACE FUNCTION public\.create_settlements_for_order\([\s\S]*?\$function\$\s*;/)[0]);
+  await db.exec(await readFile(new URL("../supabase/migrations/20261005134046_delivered_defect_no_return_refund.sql",import.meta.url),"utf8"));
 });
 after(async () => { await db.close(); });
 
@@ -164,6 +182,70 @@ test("일부 반품은 직접 계산 필수, 선택 품목만 환불·정산 취
   await assert.rejects(approve(second),/계산 근거/);
 });
 
+test("구매확정 후 회수 면제: 선택 교재만 환불·미지급 정산 취소·재판매 제외, 재실행은 멱등",async()=>{
+  const order=await fixture({status:"confirmed",total:11000,shipping:0,prices:[5500,5500]});
+  const prepared=await rpc("admin_prepare_delivered_no_return_refund",[
+    order.id,[order.ids[0]],"모의고사 전체 풀이 흔적 확인, 반품 없이 환불",5500,"선택 17회 상품값 전액, 배송비 차감 없음",
+  ]);
+  const row=(await rpc("admin_get_order_returns",[order.id]))[0];
+  assert.equal(row.return_waived,true); assert.equal(row.requires_return,false); assert.equal(row.restock,false);
+  assert.equal(row.status,"approved"); assert.equal(row.received_at,null); assert.equal(row.shipping_deduction,0);
+  assert.ok(row.items.every(item=>!item.received_at));
+  assert.equal((await query("select refunded_amount from orders where id=$1",[order.id]))[0].refunded_amount,0);
+  await assert.rejects(query("update order_return_cases set restock=true where id=$1",[prepared.return_id]),/order_return_waived_no_restock/);
+  const attempt=await claim(prepared.return_id);
+  const completed=await rpc("admin_complete_return_refund",[prepared.return_id,attempt.token]);
+  assert.equal(completed.held_books,0); assert.equal(completed.discarded_books,1);
+  assert.equal((await rpc("admin_complete_return_refund",[prepared.return_id,attempt.token])).already_completed,true);
+  const items=await query("select b.status,b.is_public,oi.refunded_at,oi.restock_held_at from order_items oi join books b on b.id=oi.book_id where oi.order_id=$1 order by oi.id",[order.id]);
+  assert.equal(items[0].status,"discarded"); assert.equal(items[0].is_public,false); assert.ok(items[0].refunded_at); assert.equal(items[0].restock_held_at,null);
+  assert.equal(items[1].status,"reserved"); assert.equal(items[1].refunded_at,null);
+  assert.deepEqual((await query("select status from settlements where order_id=$1 order by book_id",[order.id])).map(r=>r.status),["cancelled","pending"]);
+  assert.equal((await query("select refunded_amount,status from orders where id=$1",[order.id]))[0].refunded_amount,5500);
+  assert.equal((await query("select count(*)::int n from order_return_events where return_id=$1 and action='waived_inventory_excluded'",[prepared.return_id]))[0].n,1);
+});
+
+test("이미 지급한 구매확정 품목은 손실 확인 전 PG 실행 차단, 선택 정산만 회수 필요",async()=>{
+  const order=await fixture({status:"confirmed",total:11000,shipping:0,prices:[5500,5500],settled:true});
+  await query("update books set status='settled' where id=any($1)",[order.ids]);
+  const prepared=await rpc("admin_prepare_delivered_no_return_refund",[order.id,[order.ids[0]],"풀이 완료된 모의고사 하자 확인·회수 면제",5500,"해당 교재 상품값 전액 환불"]);
+  await assert.rejects(claim(prepared.return_id),/RECOVERY_REQUIRED_ACK/);
+  assert.equal((await query("select status from order_return_cases where id=$1",[prepared.return_id]))[0].status,"approved");
+  const attempt=await claim(prepared.return_id,null,true);
+  await rpc("admin_complete_return_refund",[prepared.return_id,attempt.token]);
+  assert.deepEqual((await query("select status from settlements where order_id=$1 order by book_id",[order.id])).map(r=>r.status),["recovery_required","completed"]);
+  assert.deepEqual((await query("select status from books where id=any($1) order by id",[order.ids])).map(r=>r.status),["discarded","settled"]);
+});
+
+test("회수 면제는 하자·배송 상태·금액을 검증하고 승인 실패 또는 접수 취소 시 재고를 바꾸지 않음",async()=>{
+  const unsent=await fixture({status:"preparing"});
+  await assert.rejects(rpc("admin_prepare_delivered_no_return_refund",[unsent.id,unsent.ids,"회수 없는 환불 사유"]),/배송중/);
+  const order=await fixture({status:"confirmed"});
+  await assert.rejects(rpc("admin_prepare_delivered_no_return_refund",[order.id,[order.ids[0]],"필기 하자로 회수 면제"]),/계산 근거/);
+  await assert.rejects(rpc("admin_prepare_delivered_no_return_refund",[order.id,[99999],"필기 하자로 회수 면제",5000,"선택 교재 결제금액 환불"]),/미환불 품목/);
+  assert.equal((await query("select count(*)::int n from order_return_cases where order_id=$1",[order.id]))[0].n,0);
+  const prepared=await rpc("admin_prepare_delivered_no_return_refund",[order.id,order.ids,"모든 교재 필기 하자로 회수 면제"]);
+  assert.equal(prepared.refund_amount,23000); assert.equal(prepared.shipping_deduction,0);
+  await rpc("admin_cancel_order_return",[prepared.return_id,"고객 협의로 환불 접수 정정"]);
+  assert.ok((await query("select status from books where id=any($1)",[order.ids])).every(b=>b.status==="reserved"));
+  assert.equal((await query("select refunded_amount from orders where id=$1",[order.id]))[0].refunded_amount,0);
+});
+
+test("회수 면제 진행 중 정산 생성 보류, 환불 후 선택 품목 제외·남은 품목만 생성 및 중복 방지",async()=>{
+  const order=await fixture({status:"confirmed",total:11000,shipping:0,prices:[5500,5500],settlements:false});
+  await query("insert into shipments(id,pickup_date,fee_policy_version,settlement_bank_name,settlement_account_last4,settlement_account_holder) values($1,'2026-09-01','legacy','테스트은행','1234','테스트 셀러')",[order.id]);
+  await query("update books set shipment_id=$1 where id=any($2)",[order.id,order.ids]);
+  await query("update orders set confirmed_at=now() where id=$1",[order.id]);
+  const prepared=await rpc("admin_prepare_delivered_no_return_refund",[order.id,[order.ids[0]],"모의고사 풀이 확인으로 회수 면제",5500,"해당 회차 상품값 전액 환불"]);
+  assert.equal((await rpc("create_settlements_for_order",[order.id])).reason,"refund_on_hold");
+  assert.equal((await query("select count(*)::int n from settlements where order_id=$1",[order.id]))[0].n,0);
+  const attempt=await claim(prepared.return_id); await rpc("admin_complete_return_refund",[prepared.return_id,attempt.token]);
+  assert.equal((await rpc("create_settlements_for_order",[order.id])).inserted_count,1);
+  const rows=await query("select book_id,status,sale_amount,net_amount from settlements where order_id=$1",[order.id]);
+  assert.deepEqual(rows,[{book_id:order.ids[1],status:"pending",sale_amount:5500,net_amount:3025}]);
+  assert.equal((await rpc("create_settlements_for_order",[order.id])).inserted_count,0);
+});
+
 test("실제 기존 트리거 유지: 포인트는 현금과 분리해 1회 복구, 후기 적립 회수, 전체 환불 재고 보류",async()=>{
   const order=await fixture({total:21000});
   await query('update orders set points_used=2000 where id=$1',[order.id]);
@@ -220,6 +302,7 @@ test("RLS: 타 구매자 진행·내부 메모·토큰 비노출, 비관리자 �
   await assert.rejects(rpc("admin_get_order_returns",[order.id]),/Admin access/);
   await assert.rejects(rpc("admin_receive_order_return",[id,order.ids]),/Admin access/);
   await assert.rejects(rpc("admin_prepare_no_return_refund",[order.id,order.ids,"미발송 확인 완료",false,null,null]),/Admin access/);
+  await assert.rejects(rpc("admin_prepare_delivered_no_return_refund",[order.id,order.ids,"풀이 흔적 확인 회수 면제",null,null]),/Admin access/);
   await assert.rejects(query("update order_return_cases set status='approved' where id=$1",[id]),/permission denied/);
   await assert.rejects(query("select subook_refund_internal.admin_refund_order_items($1,$2)",[order.id,order.ids]),/permission denied/);
   await db.exec(`select set_config('app.uid','00000000-0000-0000-0000-000000000003',false);`);

@@ -40,7 +40,7 @@ before(async () => {
     create table orders(id bigint primary key,order_number text,user_id uuid,status text,total_amount integer,shipping_fee integer,subtotal integer,
       payment_method text,payment_key text,pg_provider text,payment_status text default 'paid',refunded_amount integer default 0,
       applied_member_coupon_id bigint,refund_requested_at timestamptz,refund_request_reason text,refund_request_resolved_at timestamptz,
-      refunded_at timestamptz,refund_reason text,updated_at timestamptz,auto_confirm_at timestamptz,confirmed_at timestamptz,tracking_number text,points_used integer default 0);
+      refunded_at timestamptz,refund_reason text,created_at timestamptz default now(),updated_at timestamptz,auto_confirm_at timestamptz,confirmed_at timestamptz,tracking_number text,points_used integer default 0);
     create table books(id bigint primary key,status text,is_public boolean,shipment_id bigint,condition_grade text);
     create table order_items(id bigint primary key,order_id bigint references orders(id),book_id bigint references books(id),title text,total_price integer,
       refunded_at timestamptz,refund_amount integer,refund_reason text,restock_held_at timestamptz,quantity integer default 1,unit_price integer);
@@ -93,8 +93,22 @@ before(async () => {
   const settlementSource=await readFile(new URL("../supabase/migrations/20260910054749_pickup_fee_policy_versions.sql",import.meta.url),"utf8");
   await db.exec(settlementSource.match(/CREATE OR REPLACE FUNCTION public\.create_settlements_for_order\([\s\S]*?\$function\$\s*;/)[0]);
   await db.exec(await readFile(new URL("../supabase/migrations/20261005134046_delivered_defect_no_return_refund.sql",import.meta.url),"utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261005145939_member_refund_request_items.sql",import.meta.url),"utf8"));
 });
 after(async () => { await db.close(); });
+
+test("품목 지정 구매자 신청도 기존 정산 생성 보류 가드와 연결된다",async()=>{
+  const order=await fixture({settlements:false});
+  await query("select set_config('app.uid',$1,false)",[buyerId]);
+  try {
+    await rpc("request_member_refund",[order.id,"답이 이미 적힌 교재가 도착했습니다.",[order.ids[0]]]);
+  } finally { await query("select set_config('app.uid',$1,false)",[adminId]); }
+  // 정산 대상 상태로 넘어가더라도 미해소 신청이 있으면 생성하지 않는다.
+  await query("update orders set status='confirmed',confirmed_at=now() where id=$1",[order.id]);
+  const result=await rpc("create_settlements_for_order",[order.id]);
+  assert.equal(result.reason,"refund_on_hold");
+  assert.equal((await query("select count(*)::int n from settlements where order_id=$1",[order.id]))[0].n,0);
+});
 
 test("도착·검수 전 차단, 일부 도착 차단, 승인만으로 금전·재고 불변, 23,000→17,000원",async()=>{
   const order = await fixture(); const id = await start(order);

@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { combineDeliveryOrders, deliveryRevision } from "../_lib/deliveryGroups.js";
+import { listOrderReshipments, processOrderReshipment } from "../_lib/orderReshipments.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // CJ대한통운 Open API (택배 표준 API) — 배송(발송) 예약 접수 + 자체 운송장 발급
@@ -641,7 +642,7 @@ function makeMockTrackingNumber(order) {
   return `${nowDigits}${idDigits}`.slice(-12).padStart(12, "0");
 }
 
-async function registerCjDelivery(order, { token, cfg, beforeBooking }) {
+async function registerCjDelivery(order, { token, cfg, beforeBooking, allowDuplicateRecovery = true }) {
   if (isMockMode()) {
     const trackingNumber = makeMockTrackingNumber(order);
     const result = {
@@ -683,7 +684,7 @@ async function registerCjDelivery(order, { token, cfg, beforeBooking }) {
   // 과거 시도가 CJ에는 접수됐는데 응답이 유실되면(타임아웃/연결 끊김) 우리 DB에 운송장이
   // 없는 채로 CJ에 유령 예약이 남아, 같은 주문번호 재접수가 전부 중복 거부된다.
   // 1차: 유령 예약 취소(CnclBook) 후 새 운송장번호로 재접수.
-  if (!isCjSuccess(body) && isCjDuplicateBooking(body)) {
+  if (allowDuplicateRecovery && !isCjSuccess(body) && isCjDuplicateBooking(body)) {
     console.warn("[cj-delivery] duplicate booking — auto-heal start", {
       orderNumber: order.order_number,
       detail: getCjMessage(body).slice(0, 200),
@@ -941,7 +942,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    await assertAdminUser(accessToken);
+    const adminUser = await assertAdminUser(accessToken);
     const supabase = createServiceClient();
 
     let body = {};
@@ -975,6 +976,21 @@ export default async function handler(req, res) {
       );
     }
 
+    if (body.reshipmentAction) {
+      if (orderIds.length !== 1 || !['list', 'register', 'reprint'].includes(body.reshipmentAction)) {
+        return res.status(400).json({ error: '재발송은 주문 한 건씩 처리해 주세요.', code: 400 });
+      }
+      const orderId = orderIds[0];
+      if (body.reshipmentAction === 'list') {
+        return res.status(200).json({ reshipments: await listOrderReshipments(supabase, orderId) });
+      }
+      const cfg = getCjConfig();
+      // 재출력은 저장한 라우팅만 사용하므로 CJ 장애 중에도 가능하다.
+      const token = body.reshipmentAction === 'reprint' ? null : await getOneDayToken(cfg);
+      const row = await processOrderReshipment({ supabase, orderId, body, adminId: adminUser.id,
+        token, cfg, getOrder, registerCjDelivery, buildSenderForLabel });
+      return res.status(200).json({ results: [row], success: row.success });
+    }
     if (body.preview) {
       const groups = await planDeliveries(supabase, orderIds);
       const plannedIds = new Set(groups.flatMap((group) => group.orderIds));

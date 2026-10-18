@@ -805,20 +805,31 @@ function buildSenderForLabel(cfg) {
 }
 
 async function getOrders(supabase, ids) {
-  const { data, error } = await supabase.from("orders").select(ORDER_SELECT).in("id", ids).order("id");
-  if (error) throw error;
-  return data ?? [];
+  const orders = [];
+  // 전체 출고 대상은 PostgREST 행 수/URL 길이 제한을 넘을 수 있다.
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const { data, error } = await supabase.from("orders").select(ORDER_SELECT).in("id", ids.slice(offset, offset + 100)).order("id");
+    if (error) throw error;
+    orders.push(...(data ?? []));
+  }
+  return orders;
 }
 
-async function planDeliveries(supabase, orderIds) {
-  const { data, error } = await supabase.rpc("admin_plan_order_deliveries", { p_order_ids: orderIds });
+async function planDeliveries(supabase, orderIds, smart = false) {
+  const { data, error } = smart
+    ? await supabase.rpc("admin_plan_pending_order_deliveries")
+    : await supabase.rpc("admin_plan_order_deliveries", { p_order_ids: orderIds });
   if (error) throw error;
-  const groups = data ?? [];
+  const groups = smart ? data?.groups ?? [] : data ?? [];
   const allOrders = await getOrders(supabase, groups.flat());
-  return groups.map((ids) => ({
+  if (new Set(allOrders.map((order) => order.id)).size !== new Set(groups.flat()).size) {
+    throw new Error("출고 대상 주문을 모두 불러오지 못했습니다. 다시 조회해 주세요.");
+  }
+  const plan = groups.map((ids) => ({
     orderIds: ids,
     orders: allOrders.filter((order) => ids.includes(order.id)),
   })).map((group) => ({ ...group, order: combineDeliveryOrders(group.orders), revision: deliveryRevision(group.orders) }));
+  return { groups: plan, heldOrders: smart ? data?.heldOrders ?? [] : [] };
 }
 
 async function loadExistingDelivery(supabase, orderId) {
@@ -958,7 +969,11 @@ export default async function handler(req, res) {
     }
 
     const orderIds = normalizeIds(body.orderIds ?? body.orderId);
-    if (orderIds.length === 0) {
+    const smartPreview = body.smart === true && body.preview === true;
+    if (body.smart && (!smartPreview || body.reprint || body.group || body.reshipmentAction || body.force)) {
+      return res.status(400).json({ error: "스마트 출력 대상을 먼저 확인해 주세요.", code: 400 });
+    }
+    if (orderIds.length === 0 && !smartPreview) {
       return res.status(400).json(
         makeErrorResponse({
           error: "orderIds is required.",
@@ -992,10 +1007,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ results: [row], success: row.success });
     }
     if (body.preview) {
-      const groups = await planDeliveries(supabase, orderIds);
+      const { groups, heldOrders } = await planDeliveries(supabase, orderIds, smartPreview);
       const plannedIds = new Set(groups.flatMap((group) => group.orderIds));
       return res.status(200).json({
         groups,
+        heldOrders,
         excludedOrderIds: orderIds.filter((id) => !plannedIds.has(id)),
       });
     }
@@ -1016,7 +1032,7 @@ export default async function handler(req, res) {
     const results = [];
     const groups = body.reprint ? orderIds.map((id) => [id])
       : body.group ? [orderIds]
-        : (await planDeliveries(supabase, orderIds)).map((group) => group.orderIds);
+        : (await planDeliveries(supabase, orderIds)).groups.map((group) => group.orderIds);
     if (!body.reprint && !body.group) {
       const plannedIds = new Set(groups.flat());
       for (const id of orderIds.filter((id) => !plannedIds.has(id))) {

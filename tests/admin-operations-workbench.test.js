@@ -12,7 +12,7 @@ const rpc = async (sql, params = []) => (await q(`select ${sql} as result`,param
 
 before(async () => {
   await db.exec(`
-    create role anon; create role authenticated;
+    create role anon; create role authenticated; create role service_role;
     create schema auth;
     create table auth.users(id uuid primary key);
     insert into auth.users values('${admin}'),('${member}');
@@ -50,6 +50,8 @@ before(async () => {
   `);
   await db.exec(await readFile(new URL("../supabase/migrations/20261006064146_admin_operations_workbench.sql",import.meta.url),"utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20261006072852_admin_coupon_operation_tags.sql",import.meta.url),"utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20260907170234_auto_combined_order_delivery.sql",import.meta.url),"utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261018165928_smart_order_waybill_and_title_search.sql",import.meta.url),"utf8"));
   await login(true);
   await db.exec(`
     insert into coupons(id,title,is_active,valid_until,issued_count) values(1,'만료 쿠폰',true,now()-interval '1 day',0),(2,'CS 쿠폰',true,null,0);
@@ -72,6 +74,55 @@ before(async () => {
   `);
 });
 after(() => db.close());
+
+test("책 제목은 페이지 전에 검색하고 여러 품목이 일치해도 주문 건수는 중복되지 않음", async () => {
+  await db.exec('reset role; begin');
+  try {
+    await db.exec(`insert into order_items(id,order_id,title,quantity) values(91,1,'피킹 교재',1),(92,3,'피킹 교재',1)`);
+    const first = await rpc("list_admin_work_orders(p_search=>'피킹',p_limit=>1)");
+    const second = await rpc("list_admin_work_orders(p_search=>'피킹',p_limit=>1,p_offset=>1)");
+    assert.equal(first.total_count,2);
+    assert.equal(second.total_count,2);
+    assert.notEqual(first.items[0].id, second.items[0].id);
+    assert.deepEqual((await rpc("list_admin_work_orders(p_search=>'피킹',p_view=>'fulfillment')")).items.map(row=>row.id),[3]);
+    assert.equal((await rpc("list_admin_work_orders(p_search=>'존재하지 않는 책')")).total_count,0);
+    assert.equal((await rpc("list_admin_work_orders(p_search=>'OLD-REFUND')")).items[0].id,1);
+  } finally { await db.exec('rollback'); }
+});
+
+test("스마트 출력은 전체 배송준비를 동일 수취 정보로 묶고 환불·접수중·기발급 주문을 제외", async () => {
+  await db.exec('reset role; begin');
+  try {
+    for (let id=10;id<=22;id++) {
+      await q(`insert into orders(id,order_number,user_id,status,shipping_recipient_name,shipping_recipient_phone,
+        shipping_postal_code,shipping_address_line1,shipping_address_line2) values($1,$2,$3,'preparing','수령인','010-1234-5678','12345','서울 테스트로 1','101호')`,[id,`SMART-${id}`,member]);
+      await q('insert into order_items(id,order_id,title,quantity) values($1,$1,$2,1)',[id,'배송 교재']);
+    }
+    await db.exec(`update orders set shipping_recipient_phone='01012345678',shipping_address_line1=' 서울  테스트로 1 ' where id=11;
+      update orders set shipping_address_line2='102호' where id=12;
+      update orders set user_id='${admin}' where id=13;
+      update orders set user_id=null where id in (14,15);
+      update orders set refund_requested_at=now() where id=16;
+      update order_items set refunded_at=now() where id=17;
+      update orders set tracking_number='already-issued' where id=18;
+      update orders set status='pending' where id=19;
+      update orders set shipping_recipient_name='' where id=22;
+      insert into order_delivery_groups(id,state) values('00000000-0000-0000-0000-000000000020','booking');
+      insert into order_delivery_groups(id,state,updated_at) values('00000000-0000-0000-0000-000000000021','claimed',now()-interval '11 minutes');
+      insert into order_delivery_group_members values(20,'00000000-0000-0000-0000-000000000020'),(21,'00000000-0000-0000-0000-000000000021');`);
+    const before = await q('select id,status,tracking_number from orders order by id');
+    await db.exec('set local role service_role');
+    const result=await rpc('admin_plan_pending_order_deliveries()');
+    assert.ok(result.groups.some(ids=>JSON.stringify(ids)===JSON.stringify([10,11,21])));
+    for (const id of [12,13,14,15,22]) assert.ok(result.groups.some(ids=>ids.length===1 && ids[0]===id));
+    for (const id of [16,17,18,19,20]) assert.ok(!result.groups.flat().includes(id));
+    assert.deepEqual(result.heldOrders.map(row=>row.id),[16,17,20]);
+    await db.exec('reset role');
+    assert.deepEqual(await q('select id,status,tracking_number from orders order by id'),before);
+    await db.exec('set local role authenticated');
+    await assert.rejects(rpc('admin_plan_pending_order_deliveries()'),/permission denied/);
+  } finally { await db.exec('rollback; reset role'); }
+});
 
 test("새 읽기 RPC는 익명과 일반 회원 접근을 거절", async () => {
   await db.exec("set role anon");

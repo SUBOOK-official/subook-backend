@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createHmac, randomBytes } from "crypto";
+import { maskAppCode } from "../_lib/ilseongPartner.js";
 
 // ── 솔라피(SOLAPI) 카카오 알림톡 API 설정 ──────────────────────
 const SOLAPI_SEND_URL = "https://api.solapi.com/messages/v4/send";
@@ -20,7 +21,13 @@ const VALID_NOTIFICATION_TYPES = new Set([
   // ⚠ admin_refund_order / 정산 회수 흐름에서 호출되는 type. 이전엔 set에 없어
   //   notifyRefundCompleted가 400 INVALID_NOTIFICATION_TYPE로 거부됐다.
   "refund_completed",
+  // 일성월심 앱 코드 안내 — 코드는 호출자가 넘기지 않고 서버가 주문에서 읽는다(아래 prepareAppCodeNotification).
+  "app_code",
 ]);
+
+// 문자 대체 발송을 켜는 알림. 나머지는 SOLAPI_ENABLE_SMS_FALLBACK 설정을 그대로 따른다.
+// 앱 코드는 받지 못하면 앱을 못 쓰므로 카카오 미수신 시 솔라피가 템플릿 내용을 문자로 보낸다.
+const SMS_FALLBACK_TYPES = new Set(["app_code"]);
 
 // 카카오 알림톡 템플릿 코드 매핑 (notification_logs.template_code용 내부 라벨)
 const TEMPLATE_CODES = {
@@ -32,6 +39,7 @@ const TEMPLATE_CODES = {
   delivery_done: "SB_DELIVERY_DONE",
   restock: "SB_RESTOCK",
   refund_completed: "SB_REFUND_COMPLETED",
+  app_code: "SB_APP_CODE",
 };
 
 // ── 메시지 본문 생성 ─────────────────────────────────────────
@@ -134,6 +142,24 @@ function buildMessageBody(type, vars) {
         `환불 관련 문의사항이 있으신 경우 수북(SUBOOK) 고객센터로 문의해 주세요.`
       );
 
+    // 일성월심 앱 코드 — 솔라피 등록 문안 초안은 ALIMTALK_TEMPLATES.md "일성월심 앱 코드" 절.
+    // 로그·사이트 내 알림에는 가린 코드가 들어간다(원문은 알림톡·문자로만 나간다).
+    case "app_code":
+      return (
+        `[수북(SUBOOK) 일성월심 앱 코드 안내]\n` +
+        `안녕하세요, 수북(SUBOOK)입니다.\n` +
+        `주문하신 일성월심 학습지의 앱 이용 코드를 보내드립니다.\n` +
+        `► 주문번호 : ${vars.orderNumber}\n` +
+        `► 앱 코드 : ${vars.appCode}\n` +
+        `► 앱 받는 곳 : ${vars.appDownloadUrl}\n` +
+        `[코드 등록 방법]\n` +
+        `1. 일성월심 앱을 설치하고 로그인합니다.\n` +
+        `2. 앱에서 '코드 등록'을 누릅니다.\n` +
+        `3. 위 16자리 코드를 입력하면 4과목 학습지가 한 번에 등록됩니다.\n` +
+        `코드는 수북(SUBOOK) 주문 상세(비회원은 주문 조회)에서도 확인하실 수 있습니다.\n` +
+        `※ 앱 이용권은 교재 구매 고객에게 드리는 부가서비스이며, 교재를 반품·환불하면 앱 이용도 함께 끝납니다.`
+      );
+
     default:
       return "";
   }
@@ -150,6 +176,7 @@ function buildInAppTitle(type, vars) {
     case "delivery_done":   return "교재가 도착했어요";
     case "restock":         return `"${vars.productTitle ?? "알림 신청한 교재"}" 재입고`;
     case "refund_completed": return "환불이 완료되었어요";
+    case "app_code":        return "일성월심 앱 코드가 발급되었어요";
     default:                return "알림";
   }
 }
@@ -228,7 +255,10 @@ async function sendKakaoAlimtalk({ recipientPhone, notificationType, templateVar
         templateId,
         variables,
         // 알림톡 실패 시 문자 대체발송 — 기본 비활성(추가 과금 방지). 켜려면 SOLAPI_ENABLE_SMS_FALLBACK=true
-        disableSms: String(process.env.SOLAPI_ENABLE_SMS_FALLBACK || "").toLowerCase() !== "true",
+        // 단, SMS_FALLBACK_TYPES(앱 코드)는 항상 대체발송(솔라피가 템플릿 내용을 문자로 보냄, 알림톡 요금은 환불·문자 요금 차감).
+        disableSms: SMS_FALLBACK_TYPES.has(notificationType)
+          ? false
+          : String(process.env.SOLAPI_ENABLE_SMS_FALLBACK || "").toLowerCase() !== "true",
       },
     },
   };
@@ -356,6 +386,54 @@ async function assertAdminUser(accessToken) {
   return supabase;
 }
 
+// ── 일성월심 앱 코드: 코드·수신번호를 서버가 주문에서 읽는다 ──────────────
+// 호출자(크론·관리자 재발송)가 넘긴 코드·번호는 쓰지 않는다 — 코드는 주문 연락처로만 나간다.
+// 로그(notification_logs)·사이트 내 알림에는 가린 코드만 남긴다.
+function createServiceClient() {
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.SUPABASE_ADMIN_URL ||
+    process.env.VITE_SUPABASE_ADMIN_URL ||
+    process.env.VITE_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !serviceKey) return null;
+  return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+
+async function prepareAppCodeNotification({ refType, refId }) {
+  const orderId = Number(refId);
+  if (refType !== "order" || !Number.isInteger(orderId) || orderId <= 0) {
+    return { ok: false, status: 400, code: "APP_CODE_REF_REQUIRED", error: "app_code는 refType=order, refId=주문 id가 필요합니다." };
+  }
+  const service = createServiceClient();
+  if (!service) {
+    return { ok: false, status: 500, code: "CONFIG_MISSING", error: "Server misconfigured" };
+  }
+  const { data: context, error } = await service.rpc("ilseong_app_order_context", { p_order_id: orderId });
+  if (error || !context?.order) {
+    return { ok: false, status: 404, code: "ORDER_NOT_FOUND", error: error?.message || "주문을 찾을 수 없습니다." };
+  }
+  const lines = (Array.isArray(context.lines) ? context.lines : []).filter(
+    (line) => line.code && ["issued", "redeemed"].includes(line.status) && !line.revoke_requested_at,
+  );
+  if (lines.length === 0) {
+    return { ok: false, status: 409, code: "NO_APP_CODES", error: "보낼 앱 코드가 없습니다." };
+  }
+  const appDownloadUrl = String(context.settings?.app_download_url || "").trim();
+  if (!appDownloadUrl) {
+    return { ok: false, status: 409, code: "APP_DOWNLOAD_URL_MISSING", error: "앱 받는 곳(app_download_url)이 설정되지 않았습니다." };
+  }
+  const orderNumber = context.order.order_number;
+  return {
+    ok: true,
+    recipientPhone: context.order.recipient_phone,
+    recipientName: context.order.recipient_name,
+    recipientUserId: context.order.user_id || null,
+    sendVariables: { orderNumber, appCode: lines.map((line) => line.code).join(", "), appDownloadUrl },
+    logVariables: { orderNumber, appCode: lines.map((line) => maskAppCode(line.code)).join(", "), appDownloadUrl },
+  };
+}
+
 // ── 메인 핸들러 ──────────────────────────────────────────────
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -397,20 +475,31 @@ export default async function handler(req, res) {
   // 요청 바디 파싱
   const {
     notificationType,
-    recipientPhone,
-    recipientName,
-    recipientUserId,
     refType,
     refId,
-    templateVariables,
     allowDuplicate,
   } = req.body || {};
+  let { recipientPhone, recipientName, recipientUserId, templateVariables } = req.body || {};
 
   if (!notificationType || !VALID_NOTIFICATION_TYPES.has(notificationType)) {
     return res.status(400).json(makeErrorResponse({
       error: `Invalid notification type: ${notificationType}`,
       code: "INVALID_NOTIFICATION_TYPE",
     }));
+  }
+
+  // 발송용 변수와 기록용 변수. 앱 코드만 다르다(기록에는 가린 코드).
+  let sendTemplateVariables = templateVariables || {};
+  if (notificationType === "app_code") {
+    const prepared = await prepareAppCodeNotification({ refType, refId });
+    if (!prepared.ok) {
+      return res.status(prepared.status).json(makeErrorResponse({ error: prepared.error, code: prepared.code }));
+    }
+    recipientPhone = prepared.recipientPhone;
+    recipientName = prepared.recipientName;
+    recipientUserId = prepared.recipientUserId;
+    templateVariables = prepared.logVariables;
+    sendTemplateVariables = prepared.sendVariables;
   }
 
   if (!recipientPhone) {
@@ -497,7 +586,7 @@ export default async function handler(req, res) {
   const kakaoResult = await sendKakaoAlimtalk({
     recipientPhone,
     notificationType,
-    templateVariables: templateVariables || {},
+    templateVariables: sendTemplateVariables,
   });
 
   const logStatus = kakaoResult.success ? "sent" : "failed";

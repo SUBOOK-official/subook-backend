@@ -142,7 +142,8 @@ function buildMessageBody(type, vars) {
         `환불 관련 문의사항이 있으신 경우 수북(SUBOOK) 고객센터로 문의해 주세요.`
       );
 
-    // 일성월심 앱 코드 — 솔라피 등록 문안 초안은 ALIMTALK_TEMPLATES.md "일성월심 앱 코드" 절.
+    // 일성월심 앱 코드 — 솔라피 등록 템플릿(수북 일성월심 앱코드 v1)과 줄바꿈까지 동일하게 유지.
+    // 카카오 심사 기준상 앱 설치 유도·다운로드 링크는 넣을 수 없다(ALIMTALK_TEMPLATES.md "일성월심 앱 코드" 절).
     // 로그·사이트 내 알림에는 가린 코드가 들어간다(원문은 알림톡·문자로만 나간다).
     case "app_code":
       return (
@@ -151,11 +152,8 @@ function buildMessageBody(type, vars) {
         `주문하신 일성월심 학습지의 앱 이용 코드를 보내드립니다.\n` +
         `► 주문번호 : ${vars.orderNumber}\n` +
         `► 앱 코드 : ${vars.appCode}\n` +
-        `► 앱 받는 곳 : ${vars.appDownloadUrl}\n` +
         `[코드 등록 방법]\n` +
-        `1. 일성월심 앱을 설치하고 로그인합니다.\n` +
-        `2. 앱에서 '코드 등록'을 누릅니다.\n` +
-        `3. 위 16자리 코드를 입력하면 4과목 학습지가 한 번에 등록됩니다.\n` +
+        `일성월심 앱의 '코드 등록'에서 위 16자리 코드를 입력하면 4과목 학습지가 한 번에 등록됩니다.\n` +
         `코드는 수북(SUBOOK) 주문 상세(비회원은 주문 조회)에서도 확인하실 수 있습니다.\n` +
         `※ 앱 이용권은 교재 구매 고객에게 드리는 부가서비스이며, 교재를 반품·환불하면 앱 이용도 함께 끝납니다.`
       );
@@ -419,18 +417,14 @@ async function prepareAppCodeNotification({ refType, refId }) {
   if (lines.length === 0) {
     return { ok: false, status: 409, code: "NO_APP_CODES", error: "보낼 앱 코드가 없습니다." };
   }
-  const appDownloadUrl = String(context.settings?.app_download_url || "").trim();
-  if (!appDownloadUrl) {
-    return { ok: false, status: 409, code: "APP_DOWNLOAD_URL_MISSING", error: "앱 받는 곳(app_download_url)이 설정되지 않았습니다." };
-  }
   const orderNumber = context.order.order_number;
   return {
     ok: true,
     recipientPhone: context.order.recipient_phone,
     recipientName: context.order.recipient_name,
     recipientUserId: context.order.user_id || null,
-    sendVariables: { orderNumber, appCode: lines.map((line) => line.code).join(", "), appDownloadUrl },
-    logVariables: { orderNumber, appCode: lines.map((line) => maskAppCode(line.code)).join(", "), appDownloadUrl },
+    sendVariables: { orderNumber, appCode: lines.map((line) => line.code).join(", ") },
+    logVariables: { orderNumber, appCode: lines.map((line) => maskAppCode(line.code)).join(", ") },
   };
 }
 

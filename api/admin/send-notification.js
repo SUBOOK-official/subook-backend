@@ -201,13 +201,19 @@ function buildInAppRefUrl(type, refType, refId, vars) {
 
 // 알림톡 타입 → 솔라피 templateId 매핑. 템플릿 검수 통과 후 SOLAPI_TEMPLATE_IDS(JSON)로 주입.
 //   예) SOLAPI_TEMPLATE_IDS={"pickup_accepted":"KA01TP...","arrived":"KA01TP...",...}
+// 새 타입은 공용 JSON env를 건드리지 않도록 코드 기본값을 둔다(templateId는 비밀값 아님, env에 같은 키가 있으면 env 우선).
+const DEFAULT_SOLAPI_TEMPLATE_IDS = {
+  app_code: "KA01TP2611091537490371CSjaDIpw6I", // 수북 일성월심 앱코드 v1 — 2026-11-10 등록·검수 요청
+};
+
 function getSolapiTemplateId(notificationType) {
+  let map = {};
   try {
-    const map = JSON.parse(process.env.SOLAPI_TEMPLATE_IDS || "{}");
-    return map[notificationType] || "";
+    map = JSON.parse(process.env.SOLAPI_TEMPLATE_IDS || "{}") || {};
   } catch {
-    return "";
+    map = {};
   }
+  return map[notificationType] || DEFAULT_SOLAPI_TEMPLATE_IDS[notificationType] || "";
 }
 
 // 솔라피 HMAC-SHA256 인증 헤더. signature = HMAC-SHA256(date+salt, apiSecret) hex.

@@ -1,5 +1,17 @@
 # 상품 공개 설정과 재고 상태 분리
 
+2026-11-11 등록 공개 오류 수정: 상품 등록에서 `is_public=true`를 명시하면 기존 숨김
+상품의 `is_listed`도 켜고 이번에 등록하는 권만 공개한다. 기존 비공개 권은 유지한다.
+가격 없는 권·공개를 끈 등록·일반 재입고·주문 취소는 숨김 상품을 자동 공개하지 않는다.
+신상품 비공개 등록은 `is_listed=false`로 생성한다. 등록 RPC는 실제 저장 결과의
+`published_books`/`unpublished_books`를 반환하며 완료 화면은 이 권수를 표시한다.
+상품 공개 RPC의 조건은 책 공개 트리거와 동일하게 제목·판매가·등급으로 맞췄다.
+선택적인 분류/검수 세부값 누락 때문에 등록한 교재를 다시 공개하지 못하던 오류를 해결한다.
+적용 migration: `20261111093904_fix_register_product_visibility.sql`.
+롤백: 적용 전 `admin_register_customer_inventory(bigint,jsonb)`와
+`admin_bulk_set_products_visibility(bigint[],boolean)` 정의를 복원한다. 권한/RLS는 변경하지 않는다.
+회귀 검증: `node --test tests/register-product-visibility.test.js`.
+
 2026-09-23 KST. **운영 DB 적용·커밋/push·public/admin production 배포 완료.**
 
 ## 동작

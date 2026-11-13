@@ -629,7 +629,11 @@ export default async function handler(req, res) {
   if (recipientUserId) {
     const inAppTitle = buildInAppTitle(notificationType, templateVariables || {});
     const inAppRefUrl = buildInAppRefUrl(notificationType, refType, refId, templateVariables || {});
-    const { error: notifError } = await supabase.rpc("admin_create_member_notification", {
+    // admin_create_member_notification은 service_role 전용 RPC다. 어드민 토큰으로 들어온 요청의
+    // 클라이언트는 authenticated 역할이라 403으로 거부돼 미러가 누락됐다 — 권한 검증을 이미
+    // 통과한 시점이므로 서버 키 클라이언트로 미러한다(서버 키가 없으면 기존 클라이언트로 시도).
+    const mirrorClient = createServiceClient() ?? supabase;
+    const { error: notifError } = await mirrorClient.rpc("admin_create_member_notification", {
       p_user_id: recipientUserId,
       p_type: notificationType,
       p_title: inAppTitle,

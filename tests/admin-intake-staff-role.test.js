@@ -3,6 +3,7 @@
 //   20261116031241_admin_intake_staff_masking_and_log.sql — 전화번호 가리기·허용 목록 축소·등록자 기록
 //   20261116031639_admin_intake_targets_scope.sql — 등록 담당 목록은 진행 중인 건만
 //   20261116035243_intake_staff_access_check_through_identity_gate.sql — 요청 관문(휴대폰 인증)에서 권한 조회 통과
+//   20261116040503_intake_register_own_stock_bucket.sql — 자체 매입 묶음을 목록 맨 위에 고정
 // 핵심: 등록 담당은 허용한 등록 RPC 요청에서만 is_admin_user()=true, 그 밖에는 전부 false.
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -47,8 +48,12 @@ before(async () => {
     $$;
     grant execute on function public.is_admin_user() to authenticated, service_role;
 
-    create table public.shipments(id bigint primary key, seller_name text, seller_phone text, pickup_date date, status text, secret_note text);
-    insert into public.shipments values (7, '김샘플', '010-0000-0000', '2026-11-15', 'scheduled', '등록 담당에게 보이면 안 되는 값');
+    create table public.shipments(id bigint primary key, seller_name text, seller_phone text, pickup_date date, status text, secret_note text,
+      is_direct_purchase boolean not null default false, box_count integer, user_id uuid, created_at timestamptz not null default '2026-05-11T00:00:00Z');
+    insert into public.shipments(id, seller_name, seller_phone, pickup_date, status, secret_note)
+      values (7, '김샘플', '010-0000-0000', '2026-11-15', 'scheduled', '등록 담당에게 보이면 안 되는 값');
+    insert into public.shipments(id, seller_name, seller_phone, pickup_date, status, is_direct_purchase)
+      values (40, '수북 자체 매입', '02-555-0000', '2026-05-11', 'inspected', true);
     alter table public.shipments enable row level security;
     create policy shipments_select_admin on public.shipments for select to authenticated using (public.is_admin_user());
     grant select on public.shipments to authenticated;
@@ -74,7 +79,8 @@ before(async () => {
       ('shipment', 7, null, '김샘플', '01055556789', '2026-11-13', 'scheduled', 0, null, 1, null, null, '2026-11-13T03:00:00Z'),
       -- 검수가 끝난 과거 건 — 관리자 검색에는 나오고 등록 담당에게는 안 보여야 한다
       ('pickup_request', 13, 'PU-2610-0001', '나유찬', '010-7777-5678', '2026-10-02', 'inspected', 9, 9, 1, null, null, '2026-10-02T03:00:00Z'),
-      ('shipment', 8, null, '박과거', '010-2222-3333', '2026-09-01', 'inspected', 4, null, 1, null, null, '2026-09-01T03:00:00Z');
+      ('shipment', 8, null, '박과거', '010-2222-3333', '2026-09-01', 'inspected', 4, null, 1, null, null, '2026-09-01T03:00:00Z'),
+      ('shipment', 40, null, '수북 자체 매입', '02-555-0000', '2026-05-11', 'inspected', 750, null, null, null, null, '2026-05-11T00:00:00Z');
     create function public.admin_search_register_targets(p_search text, p_limit integer)
     returns table(kind text, ref_id bigint, request_number text, seller_name text, seller_phone text, target_date date,
       status text, book_count integer, expected_book_count integer, box_count integer, user_id uuid, member_name text, sort_ts timestamptz)
@@ -117,6 +123,7 @@ before(async () => {
   await db.exec(await readFile(new URL("../supabase/migrations/20261116031241_admin_intake_staff_masking_and_log.sql", import.meta.url), "utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20261116031639_admin_intake_targets_scope.sql", import.meta.url), "utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20261116035243_intake_staff_access_check_through_identity_gate.sql", import.meta.url), "utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261116040503_intake_register_own_stock_bucket.sql", import.meta.url), "utf8"));
   await q("insert into public.admin_users(email, user_id, role, display_name) values ('staff@example.com', $1, 'intake', '등록 알바')", [staff]);
 });
 after(() => db.close());
@@ -193,10 +200,12 @@ test("화면용 권한 조회는 역할을 구분해 돌려준다", async () => 
   assert.deepEqual(await access(), { role: "admin", request_path: "/rpc/get_admin_access", request_method: "POST" });
 });
 
-test("검수 건 기본 정보 RPC는 등록 담당에게 5개 값만 주고, 테이블 직접 조회는 막힌다", async () => {
+test("검수 건 기본 정보 RPC는 등록 담당에게 정해진 값만 주고, 테이블 직접 조회는 막힌다", async () => {
   await request({ uid: staff, path: "/rpc/admin_get_register_shipment" });
   const row = (await q("select public.admin_get_register_shipment(7) as s"))[0].s;
-  assert.deepEqual(Object.keys(row).sort(), ["id", "pickup_date", "seller_name", "seller_phone", "status"]);
+  assert.deepEqual(Object.keys(row).sort(), ["id", "is_direct_purchase", "pickup_date", "seller_name", "seller_phone", "status"]);
+  assert.equal(row.is_direct_purchase, false);
+  assert.equal((await q("select public.admin_get_register_shipment(40) as s"))[0].s.is_direct_purchase, true, "자체 매입 묶음 표시");
   assert.equal(row.seller_name, "김샘플");
   assert.equal(row.seller_phone, "010-****-0000", "등록 담당에게는 전화번호를 가린다");
   assert.equal((await q("select public.admin_get_register_shipment(999) as s"))[0].s, null);
@@ -254,15 +263,28 @@ test("등록 대상 목록: 등록 담당에게는 전화번호를 가리고 회
 
   await request({ uid: superAdmin, path: "/rpc/admin_list_register_targets" });
   const adminRows = await list();
-  assert.deepEqual(adminRows.map((row) => row.seller_phone), ["010-1234-5678", "010-9999-0005", "01055556789"]);
-  assert.equal(adminRows[0].user_id, member, "관리자는 기존 값 그대로");
+  assert.deepEqual(adminRows.map((row) => row.ref_id), [40, 11, 12, 7], "자체 매입 묶음이 맨 위에 고정된다");
+  assert.deepEqual(adminRows.map((row) => row.is_direct_purchase), [true, false, false, false]);
+  assert.deepEqual(adminRows.map((row) => row.seller_phone), ["02-555-0000", "010-1234-5678", "010-9999-0005", "01055556789"]);
+  assert.equal(adminRows[1].user_id, member, "관리자는 기존 값 그대로");
+  assert.deepEqual(
+    (await q("select public.admin_list_register_targets(null, 30, 30) as rows"))[0].rows.map((row) => row.ref_id),
+    [11, 12, 7],
+    "다음 쪽에는 고정 행을 다시 붙이지 않는다",
+  );
   assert.equal((await list("1234")).length, 1, "관리자는 전화번호 일부로도 검색");
   assert.deepEqual((await list("나유찬")).map((row) => row.ref_id), [11, 13], "관리자 검색에는 끝난 건도 나온다");
 
   await request({ uid: staff, path: "/rpc/admin_list_register_targets" });
   const staffRows = await list();
-  assert.deepEqual(staffRows.map((row) => row.seller_phone), ["010-****-5678", "010-****-0005", "010-****-6789"]);
-  assert.deepEqual(staffRows.map((row) => row.is_member), [true, false, false]);
+  assert.deepEqual(staffRows.map((row) => row.ref_id), [40, 11, 12, 7], "등록 담당에게도 자체 매입 묶음이 맨 위에 보인다(검수완료 상태여도)");
+  assert.equal(staffRows[0].seller_name, "수북 자체 매입");
+  assert.equal(staffRows[0].is_direct_purchase, true);
+  assert.equal(staffRows[0].book_count, 0);
+  assert.deepEqual(staffRows.map((row) => row.seller_phone), ["025-****-0000", "010-****-5678", "010-****-0005", "010-****-6789"]);
+  assert.deepEqual(staffRows.map((row) => row.is_member), [false, true, false, false]);
+  assert.deepEqual((await list("자체")).map((row) => row.ref_id), [40], "이름으로 검색해도 나온다");
+  assert.deepEqual((await list("수북")).map((row) => row.ref_id).sort((a, b) => a - b), [12, 40], "'김수북'과 자체 매입 묶음");
   for (const row of staffRows) {
     assert.equal("user_id" in row, false);
     assert.equal("member_name" in row, false);

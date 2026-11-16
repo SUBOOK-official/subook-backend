@@ -2,6 +2,7 @@
 //   20261116030246_admin_intake_staff_role.sql — 역할·허용 목록·사진 버킷
 //   20261116031241_admin_intake_staff_masking_and_log.sql — 전화번호 가리기·허용 목록 축소·등록자 기록
 //   20261116031639_admin_intake_targets_scope.sql — 등록 담당 목록은 진행 중인 건만
+//   20261116035243_intake_staff_access_check_through_identity_gate.sql — 요청 관문(휴대폰 인증)에서 권한 조회 통과
 // 핵심: 등록 담당은 허용한 등록 RPC 요청에서만 is_admin_user()=true, 그 밖에는 전부 false.
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -93,10 +94,29 @@ before(async () => {
         from public.pickup_targets t where t.status in ('arrived', 'inspecting', 'scheduled'));
     end $$;
     create table public.books(id bigint primary key, shipment_id bigint, title text);
+
+    -- 1번호 1계정 관문: 휴대폰 인증을 마친 회원만 준비된 계정 (여기서는 member만)
+    create function public.member_identity_is_ready() returns boolean language sql stable as $$
+      select auth.uid() = '${member}'::uuid
+    $$;
+    create function public.enforce_member_identity_request() returns void
+    language plpgsql security definer set search_path='' as $$
+    declare v_path text:=ltrim(coalesce(current_setting('request.path',true),''),'/');
+    begin
+      if auth.uid() is null or auth.role()='service_role' then return; end if;
+      if public.is_admin_user() then return; end if;
+      if v_path in ('rpc/get_member_identity_policy','rpc/get_my_member_identity','rpc/get_current_auth_account_role',
+        'rpc/is_admin_user','rpc/verify_phone_otp','rpc/start_member_account_merge','rpc/get_member_account_merge',
+        'rpc/prove_member_account_merge','rpc/complete_member_account_merge','rpc/attach_signup_referral','rpc/get_signup_referral_offer') then return; end if;
+      if public.member_identity_is_ready() then return; end if;
+      raise sqlstate 'PT403' using message='휴대폰 인증 또는 계정 통합을 완료해 주세요.';
+    end;
+    $$;
   `);
   await db.exec(await readFile(new URL("../supabase/migrations/20261116030246_admin_intake_staff_role.sql", import.meta.url), "utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20261116031241_admin_intake_staff_masking_and_log.sql", import.meta.url), "utf8"));
   await db.exec(await readFile(new URL("../supabase/migrations/20261116031639_admin_intake_targets_scope.sql", import.meta.url), "utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261116035243_intake_staff_access_check_through_identity_gate.sql", import.meta.url), "utf8"));
   await q("insert into public.admin_users(email, user_id, role, display_name) values ('staff@example.com', $1, 'intake', '등록 알바')", [staff]);
 });
 after(() => db.close());
@@ -288,6 +308,46 @@ test("책을 등록하면 등록자가 남고, 서버 등록은 남기지 않는
     const ok = (await q("select has_table_privilege('authenticated', 'public.book_registration_log', $1) as ok", [privilege]))[0].ok;
     assert.equal(ok, false, privilege);
   }
+});
+
+// PostgREST는 요청마다 이 관문(pgrst.db_pre_request)을 먼저 돌린다 — 함수를 직접 부르는 검증으로는 못 잡는다.
+test("요청 관문: 등록 담당은 휴대폰 인증 없이 권한 조회와 등록 RPC를 통과하고, 그 밖에는 막힌다", async () => {
+  const gate = () => q("select public.enforce_member_identity_request()");
+
+  // 로그인 직후 화면이 부르는 권한 조회 — 여기서 막히면 "관리자 권한을 확인하지 못했습니다"가 뜬다
+  await request({ uid: staff, path: "/rpc/get_admin_access" });
+  await gate();
+  for (const name of [
+    "admin_list_register_targets", "admin_start_inspection_from_pickup", "admin_get_register_shipment",
+    "admin_search_products_for_register", "admin_suggest_register_price", "admin_suggest_book_type",
+    "admin_get_register_sales_history", "admin_register_customer_inventory",
+  ]) {
+    await request({ uid: staff, path: `/rpc/${name}` });
+    await gate();
+  }
+
+  // 등록 담당의 그 밖의 요청은 관문에서도 막힌다 (회원 기능·관리자 기능 모두)
+  for (const [method, path] of [
+    ["POST", "/rpc/list_admin_members"], ["POST", "/rpc/create_order"], ["GET", "/orders"],
+    ["GET", "/member_profiles"], ["POST", "/rpc/admin_recent_intake_targets"],
+  ]) {
+    await request({ uid: staff, method, path });
+    await assert.rejects(gate(), /휴대폰 인증/, `${method} ${path}`);
+  }
+
+  // 기존 동작 유지: 관리자·인증 회원·비로그인은 통과, 인증 안 한 회원은 권한 조회만 통과
+  await request({ uid: superAdmin, path: "/rpc/list_admin_members" });
+  await gate();
+  await request({ uid: member, path: "/rpc/create_order" });
+  await gate();
+  await request({ uid: "", role: "anon", path: "/products", method: "GET" });
+  await gate();
+  const unverified = "00000000-0000-0000-0000-000000000009";
+  await request({ uid: unverified, path: "/rpc/get_admin_access" });
+  await gate();
+  assert.deepEqual((await q("select public.get_admin_access() as a"))[0].a, { role: null });
+  await request({ uid: unverified, path: "/rpc/create_order" });
+  await assert.rejects(gate(), /휴대폰 인증/);
 });
 
 test("역할 값은 정해진 것만 허용하고, 등록 담당에게 열지 않는 함수는 직접 실행 권한이 없다", async () => {

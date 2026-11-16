@@ -80,3 +80,28 @@ test('연결 실패가 계속되면 제한 횟수 뒤 중단하고 수거 상태
     assert.equal(calls,3);assert.equal(db.updates.length,0);assert.equal(db.logs.length,0);
   }finally{globalThis.fetch=original;}
 });
+// '미집화'(운영 실측 스캔코드 12) — 기사가 수거하러 갔지만 가져가지 못한 상태 (2026-11-16)
+const scan=(name,hour,code='')=>({CRG_ST:code,CRG_ST_NM:name,SCAN_YMD:'2026-09-08',SCAN_HOUR:hour});
+const departed={RESULT_CD:'S',DATA:[scan('집화출발','09:00')]};
+const uncollected={RESULT_CD:'S',DATA:[scan('집화출발','09:00'),scan('미집화','18:00','12')]};
+const collected={RESULT_CD:'S',DATA:[scan('집화출발','09:00'),scan('집화처리','15:00','11')]};
+test("'미집화'는 글자에 '집화'가 있어도 수거중으로 넘기지 않는다",async()=>{
+  const both=await lookup(pickup(),{'111111111111':uncollected,'222222222222':uncollected});
+  assert.equal(both.db.updates[0].status,'pickup_scheduled');
+  assert.equal(both.db.updates[0].cj_tracking_status,'박스1 미집화 · 박스2 미집화');
+  const single=pickup({box_count:1,box_waybills:[]});
+  const one=await lookup(single,{'111111111111':uncollected});assert.equal(one.db.updates[0].status,'pickup_scheduled');
+  // 기사가 출발만 한 상태와 실제 수거는 그대로 수거중
+  const onTheWay=await lookup(pickup(),{'111111111111':departed,'222222222222':departed});assert.equal(onTheWay.db.updates[0].status,'picking_up');
+});
+test('수거중으로 넘어갔던 건은 조회한 박스가 전부 미집화일 때만 수거접수로 되돌린다',async()=>{
+  const stuck=pickup({status:'picking_up'});
+  const healed=await lookup(stuck,{'111111111111':uncollected,'222222222222':uncollected});assert.equal(healed.db.updates[0].status,'pickup_scheduled');
+  // 한 박스라도 실제로 수거됐거나 아직 스캔이 없으면 되돌리지 않는다
+  const mixed=await lookup(stuck,{'111111111111':uncollected,'222222222222':collected});assert.equal(mixed.db.updates[0].status,'picking_up');
+  const unknown=await lookup(stuck,{'111111111111':uncollected,'222222222222':noData});assert.equal(unknown.db.updates[0].status,'picking_up');
+  // 입고·검수 이후 상태는 건드리지 않는다
+  for(const status of ['arrived','inspecting','inspected']){
+    const later=await lookup(pickup({status}),{'111111111111':uncollected,'222222222222':uncollected});assert.equal(later.db.updates[0].status,status);
+  }
+});

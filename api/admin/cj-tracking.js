@@ -448,11 +448,26 @@ async function fetchCjTracking(waybillNo, { cfg, token } = {}) {
   return normalizeTrackingResponse(waybillNo, body);
 }
 
+function isUncollectedText(statusText) {
+  return /미집화/.test(String(statusText || ""));
+}
+
+// 조회에 성공했고 최신 스캔이 '미집화'인 박스
+function isUncollectedBox(box) {
+  return !box.failed && !box.noData && isUncollectedText(box.statusText);
+}
+
 function mapTrackingToPickupStatus({ statusCode, statusText }) {
   const haystack = `${statusCode || ""} ${statusText || ""}`.toLowerCase();
 
   if (/cancel|취소|반송|반품/.test(haystack)) {
     return "cancelled";
+  }
+  // '미집화'(운영 실측 스캔코드 12) = 기사가 수거하러 갔지만 가져가지 못한 상태.
+  // 글자에 '집화'가 들어 있어 아래 수거중 규칙에 걸리던 오판정을 막는다 (2026-11-16).
+  // CJ 예약은 살아 있으므로 수거접수로 본다 — 그래야 취소·재접수가 가능하다.
+  if (isUncollectedText(statusText)) {
+    return "pickup_scheduled";
   }
   if (/delivered|complete|배송완료|배달완료|도착|입고/.test(haystack)) {
     return "arrived";
@@ -467,13 +482,20 @@ function mapTrackingToPickupStatus({ statusCode, statusText }) {
   return null;
 }
 
-function chooseNextPickupStatus(currentStatus, mappedStatus) {
+function chooseNextPickupStatus(currentStatus, mappedStatus, { everyBoxUncollected = false } = {}) {
   if (!mappedStatus) {
     return currentStatus;
   }
 
   if (["inspecting", "inspected", "completed"].includes(currentStatus)) {
     return currentStatus;
+  }
+
+  // 유일한 후진 규칙: '집화출발' 스캔으로 수거중이 됐지만 조회한 박스가 전부 '미집화'로
+  // 끝난 경우 수거접수로 되돌린다. 기사가 가져가지 못한 것이라 수거중에 두면 취소도
+  // 재접수도 못 하는 막다른 길이 된다 (운영에서 8~10월 접수 6건이 이렇게 멈춰 있었다).
+  if (everyBoxUncollected && currentStatus === "picking_up") {
+    return "pickup_scheduled";
   }
 
   if (mappedStatus === "cancelled") {
@@ -667,7 +689,9 @@ export async function refreshPickupTracking(supabase, pickupRequest, shared = {}
     const isMultibox = boxTargets.length > 1 || unregisteredBoxes > 0;
 
     const mappedStatus = aggregatePickupMappedStatus(boxResults, unregisteredBoxes);
-    const nextStatus = chooseNextPickupStatus(pickupRequest.status, mappedStatus);
+    const nextStatus = chooseNextPickupStatus(pickupRequest.status, mappedStatus, {
+      everyBoxUncollected: boxResults.length > 0 && boxResults.every(isUncollectedBox),
+    });
 
     const statusSummary = buildStatusSummary(boxResults, unregisteredBoxes, isMultibox);
     const statusCodes = [...new Set(boxResults.map((box) => box.statusCode).filter(Boolean))];

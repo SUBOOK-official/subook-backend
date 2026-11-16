@@ -1002,7 +1002,10 @@ export async function processPickupRegistration({ supabase, pickupRequestId, for
 // 취소인 모순이 생긴다. (DB만 취소하는 강제 경로는 UI에서 기존 RPC로 별도 제공)
 // ──────────────────────────────────────────────────────────────────────────
 
-const CANCELLABLE_PICKUP_STATUSES = ["pending", "pickup_scheduled"];
+// 수거중(picking_up)도 취소를 시도할 수 있다 (2026-11-16). '집화출발'만 찍히고 실제로는 가져가지
+// 않은 경우가 있어서다. 판단은 CJ에 맡긴다 — 박스가 이미 수거됐으면 CnclBook이 거부하고,
+// 그때는 아래 원칙대로 DB를 건드리지 않는다. (DB만 취소하는 RPC는 여전히 대기·수거접수 전용)
+const CANCELLABLE_PICKUP_STATUSES = ["pending", "pickup_scheduled", "picking_up"];
 
 // 이 요청 번호 체계로 접수된 CUST_USE_NO인지 — 요청번호 그대로(box1) 또는 "-B<seq>"(box2+).
 // 부분수거 복구 백필처럼 다른 요청 번호로 커버된 박스는 여기서 취소하면 그 요청의
@@ -1199,7 +1202,7 @@ async function processPickupCancellation({ supabase, pickupRequestId, reason, ge
       success: false,
       status: "failed",
       code: "INVALID_PICKUP_STATUS",
-      error: `이미 수거가 진행/완료된 상태(${pickupRequest.status})라 취소할 수 없습니다.`,
+      error: `이미 입고·검수가 진행된 상태(${pickupRequest.status})라 취소할 수 없습니다.`,
     };
   }
 
@@ -1238,8 +1241,8 @@ async function processPickupCancellation({ supabase, pickupRequestId, reason, ge
     };
   }
 
-  // CJ측 정리가 끝난 뒤에만 DB 취소 — admin_bulk_cancel_pickup_requests RPC와 동일 의미
-  // (pending/pickup_scheduled만, 사유 저장). 동시 상태 변경은 조건 불일치로 0건이 된다.
+  // CJ측 정리가 끝난 뒤에만 DB 취소 (사유 저장). 동시 상태 변경은 조건 불일치로 0건이 된다.
+  // (DB만 취소하는 admin_bulk_cancel_pickup_requests RPC는 여전히 pending/pickup_scheduled 전용)
   const { data: updatedRows, error: cancelError } = await supabase
     .from("pickup_requests")
     .update({

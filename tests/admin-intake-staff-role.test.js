@@ -1,4 +1,7 @@
-// 교재 등록 담당(role=intake) 권한 — 20261116030246_admin_intake_staff_role.sql
+// 교재 등록 담당(role=intake) 권한
+//   20261116030246_admin_intake_staff_role.sql — 역할·허용 목록·사진 버킷
+//   20261116031241_admin_intake_staff_masking_and_log.sql — 전화번호 가리기·허용 목록 축소·등록자 기록
+//   20261116031639_admin_intake_targets_scope.sql — 등록 담당 목록은 진행 중인 건만
 // 핵심: 등록 담당은 허용한 등록 RPC 요청에서만 is_admin_user()=true, 그 밖에는 전부 false.
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,10 +15,10 @@ const member = "00000000-0000-0000-0000-000000000003";
 const q = async (sql, params = []) => (await db.query(sql, params)).rows;
 
 // PostgREST가 요청마다 넣어 주는 설정을 흉내 낸다. path가 null이면 PostgREST 밖(Storage·직접 연결) 요청.
-async function request({ uid = "", role = "authenticated", method = "POST", path = null }) {
+async function request({ uid = "", role = "authenticated", method = "POST", path = null, email = "" }) {
   await q(
-    "select set_config('app.uid',$1,false), set_config('app.role',$2,false), set_config('request.method',$3,false), set_config('request.path',$4,false)",
-    [uid, role, path === null ? "" : method, path ?? ""],
+    "select set_config('app.uid',$1,false), set_config('app.role',$2,false), set_config('request.method',$3,false), set_config('request.path',$4,false), set_config('app.email',$5,false)",
+    [uid, role, path === null ? "" : method, path ?? "", email],
   );
 }
 const isAdmin = async () => (await q("select public.is_admin_user() as ok"))[0].ok;
@@ -28,6 +31,7 @@ before(async () => {
     insert into auth.users values('${superAdmin}'),('${staff}'),('${member}');
     create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('app.uid',true),'')::uuid$$;
     create function auth.role() returns text language sql stable as $$select nullif(current_setting('app.role',true),'')$$;
+    create function auth.jwt() returns jsonb language sql stable as $$select jsonb_build_object('email', nullif(current_setting('app.email',true),''))$$;
     grant usage on schema auth to anon, authenticated, service_role;
 
     create table public.admin_users(
@@ -58,8 +62,41 @@ before(async () => {
     create policy "read all" on storage.objects for select using (true);
 
     insert into public.admin_users(email, user_id, role) values ('owner@example.com', '${superAdmin}', 'super');
+
+    -- 등록 대상 목록의 기존 두 함수(운영 정의의 반환 모양만 흉내)와 books
+    create table public.pickup_targets(kind text, ref_id bigint, request_number text, seller_name text, seller_phone text,
+      target_date date, status text, book_count integer, expected_book_count integer, box_count integer, user_id uuid,
+      member_name text, sort_ts timestamptz);
+    insert into public.pickup_targets values
+      ('pickup_request', 11, 'PU-2611-0005', '나유찬', '010-1234-5678', '2026-11-15', 'arrived', 0, 12, 1, '${member}', '나유찬', '2026-11-15T03:00:00Z'),
+      ('pickup_request', 12, 'PU-2611-0006', '김수북', '010-9999-0005', '2026-11-14', 'arrived', 3, 20, 2, null, null, '2026-11-14T03:00:00Z'),
+      ('shipment', 7, null, '김샘플', '01055556789', '2026-11-13', 'scheduled', 0, null, 1, null, null, '2026-11-13T03:00:00Z'),
+      -- 검수가 끝난 과거 건 — 관리자 검색에는 나오고 등록 담당에게는 안 보여야 한다
+      ('pickup_request', 13, 'PU-2610-0001', '나유찬', '010-7777-5678', '2026-10-02', 'inspected', 9, 9, 1, null, null, '2026-10-02T03:00:00Z'),
+      ('shipment', 8, null, '박과거', '010-2222-3333', '2026-09-01', 'inspected', 4, null, 1, null, null, '2026-09-01T03:00:00Z');
+    create function public.admin_search_register_targets(p_search text, p_limit integer)
+    returns table(kind text, ref_id bigint, request_number text, seller_name text, seller_phone text, target_date date,
+      status text, book_count integer, expected_book_count integer, box_count integer, user_id uuid, member_name text, sort_ts timestamptz)
+    language sql stable security definer set search_path = public as $$
+      select * from public.pickup_targets t
+      where public.is_admin_user()
+        and (t.seller_name ilike '%' || p_search || '%' or t.request_number ilike '%' || p_search || '%'
+          or (regexp_replace(p_search, '[^0-9]', '', 'g') <> ''
+            and regexp_replace(t.seller_phone, '[^0-9]', '', 'g') like '%' || regexp_replace(p_search, '[^0-9]', '', 'g') || '%'))
+      order by t.sort_ts desc limit p_limit;
+    $$;
+    create function public.admin_recent_intake_targets(p_limit integer, p_offset integer)
+    returns jsonb language plpgsql stable security definer set search_path = public as $$
+    begin
+      if not public.is_admin_user() then raise exception 'Admin access required'; end if;
+      return (select coalesce(jsonb_agg(to_jsonb(t) - 'member_name' order by t.sort_ts desc), '[]'::jsonb)
+        from public.pickup_targets t where t.status in ('arrived', 'inspecting', 'scheduled'));
+    end $$;
+    create table public.books(id bigint primary key, shipment_id bigint, title text);
   `);
   await db.exec(await readFile(new URL("../supabase/migrations/20261116030246_admin_intake_staff_role.sql", import.meta.url), "utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261116031241_admin_intake_staff_masking_and_log.sql", import.meta.url), "utf8"));
+  await db.exec(await readFile(new URL("../supabase/migrations/20261116031639_admin_intake_targets_scope.sql", import.meta.url), "utf8"));
   await q("insert into public.admin_users(email, user_id, role, display_name) values ('staff@example.com', $1, 'intake', '등록 알바')", [staff]);
 });
 after(() => db.close());
@@ -82,16 +119,15 @@ test("일반 회원·비로그인은 허용 경로에서도 관리자가 아니�
 
 test("등록 담당은 허용한 등록 RPC 요청에서만 통과한다", async () => {
   const allowed = [
-    "admin_recent_intake_targets", "admin_search_register_targets", "admin_start_inspection_from_pickup",
-    "admin_get_register_shipment", "admin_search_products_for_register", "admin_intake_catalog_metadata",
-    "admin_intake_price_context", "admin_suggest_register_price", "admin_suggest_book_type",
+    "admin_list_register_targets", "admin_start_inspection_from_pickup", "admin_get_register_shipment",
+    "admin_search_products_for_register", "admin_suggest_register_price", "admin_suggest_book_type",
     "admin_get_register_sales_history", "admin_register_customer_inventory",
   ];
   for (const name of allowed) {
     await request({ uid: staff, path: `/rpc/${name}` });
     assert.equal(await isAdmin(), true, name);
   }
-  await request({ uid: staff, path: "/rest/v1/rpc/admin_recent_intake_targets" });
+  await request({ uid: staff, path: "/rest/v1/rpc/admin_list_register_targets" });
   assert.equal(await isAdmin(), true, "게이트웨이 접두사가 붙은 경로");
 });
 
@@ -103,9 +139,14 @@ test("등록 담당은 그 밖의 모든 요청에서 거부된다", async () =>
     ["POST", "/rpc/list_admin_work_orders"],           // 주문
     ["POST", "/rpc/list_admin_members"],               // 회원
     ["POST", "/rpc/admin_issue_coupon_to_all"],        // 쿠폰
-    ["POST", "/rpc/admin_recent_intake_targets_extra"], // 이름이 비슷한 다른 함수
-    ["POST", "/rpc/xadmin_recent_intake_targets"],
-    ["GET", "/rpc/admin_recent_intake_targets"],       // 허용 RPC라도 POST만
+    ["POST", "/rpc/admin_recent_intake_targets"],      // 전화번호 원본을 주는 기존 목록 함수
+    ["POST", "/rpc/admin_search_register_targets"],
+    ["POST", "/rpc/admin_intake_catalog_metadata"],    // 등록 화면이 쓰지 않는 것
+    ["POST", "/rpc/admin_intake_price_context"],
+    ["POST", "/rpc/admin_staff_registration_stats"],   // 직원 계정 화면 전용
+    ["POST", "/rpc/admin_list_register_targets_extra"], // 이름이 비슷한 다른 함수
+    ["POST", "/rpc/xadmin_list_register_targets"],
+    ["GET", "/rpc/admin_list_register_targets"],       // 허용 RPC라도 POST만
     ["GET", "/shipments"],                             // 테이블 직접 조회
     ["GET", "/orders"],
     ["POST", "/shipments"],
@@ -137,7 +178,11 @@ test("검수 건 기본 정보 RPC는 등록 담당에게 5개 값만 주고, �
   const row = (await q("select public.admin_get_register_shipment(7) as s"))[0].s;
   assert.deepEqual(Object.keys(row).sort(), ["id", "pickup_date", "seller_name", "seller_phone", "status"]);
   assert.equal(row.seller_name, "김샘플");
+  assert.equal(row.seller_phone, "010-****-0000", "등록 담당에게는 전화번호를 가린다");
   assert.equal((await q("select public.admin_get_register_shipment(999) as s"))[0].s, null);
+
+  await request({ uid: superAdmin, path: "/rpc/admin_get_register_shipment" });
+  assert.equal((await q("select public.admin_get_register_shipment(7) as s"))[0].s.seller_phone, "010-0000-0000", "관리자는 원본");
 
   await request({ uid: member, path: "/rpc/admin_get_register_shipment" });
   await assert.rejects(q("select public.admin_get_register_shipment(7)"), /Admin access required/);
@@ -183,6 +228,68 @@ test("사진 버킷: 등록 담당은 올리기와 자기 파일 삭제만, 다�
   }
 });
 
+test("등록 대상 목록: 등록 담당에게는 전화번호를 가리고 회원 식별자를 뺀다", async () => {
+  const list = async (search = null) =>
+    (await q("select public.admin_list_register_targets($1, 30, 0) as rows", [search]))[0].rows;
+
+  await request({ uid: superAdmin, path: "/rpc/admin_list_register_targets" });
+  const adminRows = await list();
+  assert.deepEqual(adminRows.map((row) => row.seller_phone), ["010-1234-5678", "010-9999-0005", "01055556789"]);
+  assert.equal(adminRows[0].user_id, member, "관리자는 기존 값 그대로");
+  assert.equal((await list("1234")).length, 1, "관리자는 전화번호 일부로도 검색");
+  assert.deepEqual((await list("나유찬")).map((row) => row.ref_id), [11, 13], "관리자 검색에는 끝난 건도 나온다");
+
+  await request({ uid: staff, path: "/rpc/admin_list_register_targets" });
+  const staffRows = await list();
+  assert.deepEqual(staffRows.map((row) => row.seller_phone), ["010-****-5678", "010-****-0005", "010-****-6789"]);
+  assert.deepEqual(staffRows.map((row) => row.is_member), [true, false, false]);
+  for (const row of staffRows) {
+    assert.equal("user_id" in row, false);
+    assert.equal("member_name" in row, false);
+    assert.equal(JSON.stringify(row).includes("1234"), false, "가운데 자리가 어디에도 남지 않는다");
+  }
+  assert.deepEqual((await list("나유찬")).map((row) => row.ref_id), [11], "이름 검색 — 검수가 끝난 건은 빠진다");
+  assert.deepEqual(await list("박과거"), [], "끝난 직접입고 건도 빠진다");
+  assert.deepEqual(await list("_"), [], "와일드카드로 목록을 훑을 수 없다");
+  assert.deepEqual(await list("%"), [], "와일드카드로 목록을 훑을 수 없다");
+  assert.deepEqual((await list("PU-2611-0006")).map((row) => row.ref_id), [12], "신청 번호 검색");
+  assert.deepEqual((await list("5678")).map((row) => row.ref_id), [11], "끝 4자리 검색");
+  assert.deepEqual((await list("0005")).map((row) => row.ref_id).sort(), [11, 12], "끝 4자리 또는 신청 번호");
+  assert.deepEqual(await list("1234"), [], "가운데 자리로는 찾을 수 없다");
+  assert.deepEqual(await list("01012345678"), [], "전체 번호로도 찾을 수 없다");
+
+  await request({ uid: member, path: "/rpc/admin_list_register_targets" });
+  await assert.rejects(list(), /Admin access required/);
+});
+
+test("책을 등록하면 등록자가 남고, 서버 등록은 남기지 않는다", async () => {
+  await request({ uid: staff, path: "/rpc/admin_register_customer_inventory", email: "Staff@Example.com" });
+  await q("insert into public.books(id, shipment_id, title) values (101, 7, '수학의 정석'), (102, 7, '개념원리')");
+  await request({ uid: superAdmin, path: "/rpc/admin_register_customer_inventory", email: "owner@example.com" });
+  await q("insert into public.books(id, shipment_id, title) values (103, 7, '쎈')");
+  await request({ uid: "", role: "service_role", path: null });
+  await q("insert into public.books(id, shipment_id, title) values (104, 7, '배치 등록')");
+
+  const logs = await q("select book_id::int as book_id, registered_by, registered_by_email from public.book_registration_log order by book_id");
+  assert.deepEqual(logs, [
+    { book_id: 101, registered_by: staff, registered_by_email: "staff@example.com" },
+    { book_id: 102, registered_by: staff, registered_by_email: "staff@example.com" },
+    { book_id: 103, registered_by: superAdmin, registered_by_email: "owner@example.com" },
+  ]);
+
+  const stats = (await q("select public.admin_staff_registration_stats() as s"))[0].s;
+  assert.equal(stats[staff].total, 2);
+  assert.equal(stats[staff].today, 2);
+  assert.ok(stats[staff].last_at);
+  assert.equal(stats[superAdmin].total, 1);
+
+  // 브라우저 역할은 기록을 직접 읽거나 고칠 수 없다
+  for (const privilege of ["select", "insert", "update", "delete"]) {
+    const ok = (await q("select has_table_privilege('authenticated', 'public.book_registration_log', $1) as ok", [privilege]))[0].ok;
+    assert.equal(ok, false, privilege);
+  }
+});
+
 test("역할 값은 정해진 것만 허용하고, 등록 담당에게 열지 않는 함수는 직접 실행 권한이 없다", async () => {
   await assert.rejects(q("insert into public.admin_users(email, user_id, role) values ('x@example.com', $1, 'root')", [member]));
   const acl = async (signature, role) =>
@@ -193,4 +300,9 @@ test("역할 값은 정해진 것만 허용하고, 등록 담당에게 열지 �
   assert.equal(await acl("public.get_admin_access()", "authenticated"), true);
   assert.equal(await acl("public.is_intake_staff()", "anon"), false);
   assert.equal(await acl("public.admin_get_register_shipment(bigint)", "anon"), false);
+  assert.equal(await acl("public.admin_list_register_targets(text, integer, integer)", "anon"), false);
+  assert.equal(await acl("public.admin_list_register_targets(text, integer, integer)", "authenticated"), true);
+  assert.equal(await acl("public.admin_staff_registration_stats()", "authenticated"), false);
+  assert.equal(await acl("public.admin_staff_registration_stats()", "service_role"), true);
+  assert.equal(await acl("public.mask_phone_for_intake(text)", "authenticated"), false);
 });

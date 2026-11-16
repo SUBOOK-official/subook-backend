@@ -64,8 +64,12 @@ async function assertAdminUser(accessToken) {
     throw error;
   }
 
-  const { data: isAdmin, error: adminError } = await supabase.rpc("is_admin_user");
-  if (adminError || !isAdmin) {
+  // 전체 관리자와 교재 등록 담당(intake) 모두 쓴다 — 상품 등록 화면의 기능이기 때문.
+  // is_admin_user()는 등록 담당에게 "허용한 등록 RPC 요청"에서만 true라 여기서는 쓸 수 없고,
+  // 역할을 돌려주는 get_admin_access()로 확인한다.
+  const { data: access, error: accessError } = await supabase.rpc("get_admin_access");
+  const role = access?.role;
+  if (accessError || (role !== "admin" && role !== "intake")) {
     const error = new Error("FORBIDDEN");
     error.statusCode = 403;
     throw error;

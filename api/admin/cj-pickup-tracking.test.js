@@ -105,3 +105,16 @@ test('수거중으로 넘어갔던 건은 조회한 박스가 전부 미집화�
     const later=await lookup(pickup({status}),{'111111111111':uncollected,'222222222222':uncollected});assert.equal(later.db.updates[0].status,status);
   }
 });
+// 'SM입고'(실측 코드 21)는 출발지 터미널 입고 — 수북 입고가 아니라 이동 중 (2026-11-16)
+const smInbound={RESULT_CD:'S',DATA:[scan('집화출발','05:46','13'),scan('집화처리','17:54','11'),scan('SM입고','19:07','21')]};
+const outForDelivery={RESULT_CD:'S',DATA:[scan('집화처리','09:00','11'),scan('간선하차','12:00','42'),scan('배송출발','13:48','82')]};
+const undelivered={RESULT_CD:'S',DATA:[scan('배송출발','13:48','82'),scan('미배송','18:00','84')]};
+test("'SM입고'·배송출발·미배송은 입고가 아니라 수거중, 입고는 배송완료일 때만",async()=>{
+  const single=(overrides={})=>pickup({box_count:1,box_waybills:[],...overrides});
+  for(const reply of [smInbound,outForDelivery,undelivered]){
+    const moving=await lookup(single(),{'111111111111':reply});assert.equal(moving.db.updates[0].status,'picking_up');
+  }
+  const done=await lookup(single({status:'picking_up'}),{'111111111111':arrived});assert.equal(done.db.updates[0].status,'arrived');
+  // 두 박스가 모두 SM입고여도 입고로 넘기지 않는다
+  const both=await lookup(pickup(),{'111111111111':smInbound,'222222222222':smInbound});assert.equal(both.db.updates[0].status,'picking_up');
+});

@@ -469,10 +469,15 @@ function mapTrackingToPickupStatus({ statusCode, statusText }) {
   if (isUncollectedText(statusText)) {
     return "pickup_scheduled";
   }
-  if (/delivered|complete|배송완료|배달완료|도착|입고/.test(haystack)) {
+  // 입고(arrived)는 수북 입고센터에 '배송완료'(규격서 1.2.1 코드 91)됐을 때만 판정한다.
+  // 'SM입고'(실측 코드 21)는 집화 기사가 출발지 터미널에 물건을 넣은 스캔으로, 집화처리 직후·
+  // 간선상차 전의 이동 중 단계다. 실측 순서: 집화출발(13) → 집화처리(11) → SM입고(21) →
+  // 간선상차(41) → 간선하차(42) → SM인수(22) → 배송출발(82) → 배송완료(91).
+  // 글자의 '입고' 때문에 하루 이틀 먼저 입고로 넘기던 오판정을 막는다 (2026-11-16).
+  if (/delivered|complete|배송완료|배달완료/.test(haystack)) {
     return "arrived";
   }
-  if (/pickup|collect|picked|집화|수거|인수|상품인수|배송중|이동중|간선/.test(haystack)) {
+  if (/pickup|collect|picked|집화|수거|인수|상품인수|배송중|이동중|간선|입고|도착|배송출발|미배송/.test(haystack)) {
     return "picking_up";
   }
   if (/accept|register|예약|접수|scheduled|received/.test(haystack)) {

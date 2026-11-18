@@ -210,6 +210,7 @@ test('환불: 앱 패키지 줄만 폐기 요청, 굿즈만 환불이면 그대�
   }
 });
 
+// 이 migration만 적용했을 때의 상태다. 구매자 쪽 읽기는 20261118121612에서 닫았다(ilseong-app-no-buyer-codes.test.js).
 test('읽기 권한: 코드 원문은 주문 회원 본인·비회원 인증·서버만', async () => {
   const db = await setup();
   try {

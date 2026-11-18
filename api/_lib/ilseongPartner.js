@@ -138,8 +138,8 @@ export function createIlseongClient({
       }
       return call("POST", `${orderPath(orderRef)}/revoke`, payload);
     },
-    // 수북 관리자 직원이 일성월심 앱 관리 화면에 들어갈 때 쓰는 1회용 입장권(1분 안에 한 번만 쓸 수 있다).
-    // 직원인지는 부르는 쪽(관리자 API)이 먼저 확인한다. 앱 서버 문서: ilseong-app docs/adr/0034
+    // 수북 관리자 직원이 「일성월심 앱」 화면에서 앱 서버에 로그인할 때 쓰는 1회용 입장권(1분 안에 한 번만 쓸 수 있다).
+    // 직원인지는 부르는 쪽(관리자 API)이 먼저 확인한다. 앱 서버 문서: ilseong-app docs/adr/0034, 0037
     async adminTicket({ staffRef, staffName }) {
       assertRef(staffRef, "staffRef");
       const name = typeof staffName === "string" ? staffName.trim().slice(0, 50) : "";
@@ -148,9 +148,10 @@ export function createIlseongClient({
   };
 }
 
-// 앱 서버가 내주는 관리 화면 주소(수북 관리자가 화면 안에 끼워 보여 준다). 연결 설정이 없으면 null.
-export function getIlseongAdminUrl(config) {
-  return config?.configured ? `${config.baseUrl}/admin/` : null;
+// 「일성월심 앱」 화면이 브라우저에서 직접 부르는 앱 서버 주소. 연결 설정이 없으면 null.
+// 비밀값이 아니다(학생 앱도 같은 주소를 부른다). 화면은 입장권으로 받은 직원 로그인 토큰을 붙여 /api/admin/** 을 부른다.
+export function getIlseongApiBaseUrl(config) {
+  return config?.configured ? config.baseUrl : null;
 }
 
 export function chunk(list, size = ILSEONG_MAX_LINES_PER_REQUEST) {

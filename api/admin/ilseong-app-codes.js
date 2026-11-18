@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   IlseongApiError,
   createIlseongClient,
-  getIlseongAdminUrl,
+  getIlseongApiBaseUrl,
   getIlseongConfig,
   isValidRef,
   syncOrder,
@@ -27,7 +27,7 @@ import { getSolapiTemplateId } from "../_lib/solapiTemplates.js";
  *   POST {action:"retry", orderId}                지금 다시 처리
  *   POST {action:"refresh", orderId}              앱 서버 상태(등록 여부) 다시 읽기
  *   POST {action:"resend", orderId}               앱 이용 안내 알림톡 다시 보내기(중복 허용)
- *   POST {action:"admin_ticket"}                  앱 관리 화면에 들어갈 1회용 입장권(직원 본인 것, 1분)
+ *   POST {action:"admin_ticket"}                  앱 서버에 직원으로 로그인할 1회용 입장권(직원 본인 것, 1분)
  *
  * 코드는 원문이든 가린 것이든 응답에 담지 않는다(이 서버와 앱 서버만 안다).
  */
@@ -228,10 +228,11 @@ export async function handleAdminAction({
 
   if (action === "overview") {
     const overview = await rpc("ilseong_app_admin_overview", {});
-    return { configured: config.configured, guideTemplateReady: Boolean(guideTemplateId), adminUrl: getIlseongAdminUrl(config), ...overview };
+    return { configured: config.configured, guideTemplateReady: Boolean(guideTemplateId), apiBaseUrl: getIlseongApiBaseUrl(config), ...overview };
   }
 
-  // 앱 관리 화면(앱 서버가 내주는 화면을 수북 관리자 안에 끼워 보여 준다)에 들어갈 1회용 입장권.
+  // 「일성월심 앱」 화면이 앱 서버에 직원으로 로그인할 때 쓰는 1회용 입장권.
+  // 화면은 이 표로 앱 서버에 로그인해 1시간짜리 토큰을 받고, 그 토큰으로 앱 서버의 관리 API를 직접 부른다.
   // 여기까지 온 요청은 관리자임이 확인됐다(assertAdmin). 표는 1분 안에 한 번만 쓸 수 있다.
   if (action === "admin_ticket") {
     requireConfigured(config);
@@ -242,7 +243,7 @@ export async function handleAdminAction({
     }
     const client = clientFactory({ baseUrl: config.baseUrl, secret: config.secret });
     const issued = await client.adminTicket({ staffRef: String(userId), staffName: userEmail });
-    return { ticket: issued?.ticket ?? null, adminUrl: getIlseongAdminUrl(config) };
+    return { ticket: issued?.ticket ?? null, apiBaseUrl: getIlseongApiBaseUrl(config) };
   }
 
   if (action === "save_settings") {

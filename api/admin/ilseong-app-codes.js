@@ -2,30 +2,34 @@ import { createClient } from "@supabase/supabase-js";
 import {
   IlseongApiError,
   createIlseongClient,
+  getIlseongAdminUrl,
   getIlseongConfig,
   isValidRef,
-  maskAppCode,
   syncOrder,
 } from "../_lib/ilseongPartner.js";
+import { getSolapiTemplateId } from "../_lib/solapiTemplates.js";
 
 /**
- * 일성월심 앱 코드 — 대기열 처리 크론 + 관리 API
+ * 일성월심 앱 패키지 — 대기열 처리 크론 + 관리 API
+ *
+ * 앱 코드는 구매와 앱 교재 권한을 잇는 안쪽 기록이다. 주문마다 앱 서버에서 발급받되(주문한 회원을 함께 보낸다),
+ * 구매자에게 보내거나 화면에 보여 주지 않는다 — 구매한 수북 계정으로 앱에 로그인하면 교재가 등록된다(2026-11-18).
  *
  * 크론(매분, Authorization: Bearer CRON_SECRET, GET):
  *   ILSEONG_API_BASE_URL·ILSEONG_PARTNER_SECRET가 없으면 앱 서버를 부르지 않고, 켜져 있던 판매만 끈다.
- *   있으면 ilseong_app_jobs에서 주문을 하나씩 가져와 발급 → 환불 폐기 → 알림톡 순으로 맞춘다.
+ *   있으면 ilseong_app_jobs에서 주문을 하나씩 가져와 발급 → 환불 폐기 → 앱 이용 안내 알림톡 순으로 맞춘다.
  *   실패는 ilseong_app_finish_job이 1·2·4…분(최대 6시간) 간격으로 다시 잡고, 12회 넘으면 운영 경보.
  *
  * 관리 API(관리자 로그인 토큰):
  *   GET  ?action=overview                         연결 여부·설정·대기열·앱 패키지 상품
  *   POST {action:"save_settings", salesEnabled, refundPolicy, appDownloadUrl}
- *   POST {action:"order", orderNumber}            주문의 코드 상태(코드는 가려서)
+ *   POST {action:"order", orderNumber}            주문의 앱 등록 상태(코드는 담지 않는다)
  *   POST {action:"retry", orderId}                지금 다시 처리
  *   POST {action:"refresh", orderId}              앱 서버 상태(등록 여부) 다시 읽기
- *   POST {action:"reissue", orderId, lineRef}     등록 전 코드를 새 코드로 바꾸고 다시 보내기
- *   POST {action:"resend", orderId}               알림톡 다시 보내기(중복 허용)
+ *   POST {action:"resend", orderId}               앱 이용 안내 알림톡 다시 보내기(중복 허용)
+ *   POST {action:"admin_ticket"}                  앱 관리 화면에 들어갈 1회용 입장권(직원 본인 것, 1분)
  *
- * 코드 원문은 응답에 담지 않는다(주문자·서버만 읽는다).
+ * 코드는 원문이든 가린 것이든 응답에 담지 않는다(이 서버와 앱 서버만 안다).
  */
 
 const RUN_BUDGET_MS = 20_000;
@@ -76,7 +80,7 @@ async function assertAdmin(accessToken) {
     error.statusCode = 403;
     throw error;
   }
-  return { userId: userResult.user.id };
+  return { userId: userResult.user.id, email: userResult.user.email || null };
 }
 
 function rpcCaller(service) {
@@ -93,8 +97,8 @@ function selfBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
-// 알림톡은 기존 send-notification(솔라피)을 그대로 쓴다. 코드·수신번호는 그쪽이 주문에서 다시 읽는다.
-function makeNotifier({ baseUrl, cronSecret, fetchImpl = globalThis.fetch }) {
+// 알림톡은 기존 send-notification(솔라피)을 그대로 쓴다. 수신번호·주문번호는 그쪽이 주문에서 다시 읽는다.
+export function makeNotifier({ baseUrl, cronSecret, fetchImpl = globalThis.fetch }) {
   return async ({ order, allowDuplicate }) => {
     if (!cronSecret) return { ok: false, error: "CRON_SECRET 미설정" };
     try {
@@ -102,7 +106,7 @@ function makeNotifier({ baseUrl, cronSecret, fetchImpl = globalThis.fetch }) {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cronSecret}` },
         body: JSON.stringify({
-          notificationType: "app_code",
+          notificationType: "app_guide",
           refType: "order",
           refId: order.id,
           recipientPhone: order.recipient_phone,
@@ -119,14 +123,14 @@ function makeNotifier({ baseUrl, cronSecret, fetchImpl = globalThis.fetch }) {
   };
 }
 
-function maskLines(lines) {
+// 관리 화면에 보내는 줄: 상태만 담고 코드는 뺀다
+function toAdminLines(lines) {
   return (Array.isArray(lines) ? lines : []).map((line) => ({
     line_ref: line.line_ref,
     order_item_id: line.order_item_id,
     title: line.title,
     app_product_code: line.app_product_code,
     status: line.status,
-    code_masked: maskAppCode(line.code),
     issued_at: line.issued_at,
     redeemed_at: line.redeemed_at,
     reissued_at: line.reissued_at,
@@ -137,12 +141,12 @@ function maskLines(lines) {
   }));
 }
 
-function maskContext(context) {
+function toAdminContext(context) {
   if (!context?.order) return null;
   const { order } = context;
   return {
     order: { id: order.id, order_number: order.order_number, status: order.status, payment_status: order.payment_status },
-    lines: maskLines(context.lines),
+    lines: toAdminLines(context.lines),
   };
 }
 
@@ -205,17 +209,48 @@ function requireConfigured(config) {
   }
 }
 
-export async function handleAdminAction({ action, body, service, config, notify, userId, clientFactory = createIlseongClient }) {
+// 앱 이용 안내 알림톡 템플릿 번호가 있어야 판매를 켠다. 없이 켜면 결제된 주문마다 안내 발송이 실패해 대기열에 쌓인다.
+// (번호가 있어도 카카오 검수 승인 전이면 발송이 거절된다 — 승인 확인은 사람이 한다. ALIMTALK_TEMPLATES.md)
+function requireGuideTemplate(guideTemplateId) {
+  if (!guideTemplateId) {
+    const error = new Error("앱 이용 안내 알림톡 템플릿 번호가 아직 없어 판매를 켤 수 없습니다. 솔라피에 템플릿을 등록하고 번호를 넣은 뒤 켜 주세요.");
+    error.statusCode = 409;
+    error.code = "APP_GUIDE_TEMPLATE_MISSING";
+    throw error;
+  }
+}
+
+export async function handleAdminAction({
+  action, body, service, config, notify, userId, userEmail = null, clientFactory = createIlseongClient,
+  guideTemplateId = getSolapiTemplateId("app_guide"),
+}) {
   const rpc = rpcCaller(service);
 
   if (action === "overview") {
     const overview = await rpc("ilseong_app_admin_overview", {});
-    return { configured: config.configured, ...overview };
+    return { configured: config.configured, guideTemplateReady: Boolean(guideTemplateId), adminUrl: getIlseongAdminUrl(config), ...overview };
+  }
+
+  // 앱 관리 화면(앱 서버가 내주는 화면을 수북 관리자 안에 끼워 보여 준다)에 들어갈 1회용 입장권.
+  // 여기까지 온 요청은 관리자임이 확인됐다(assertAdmin). 표는 1분 안에 한 번만 쓸 수 있다.
+  if (action === "admin_ticket") {
+    requireConfigured(config);
+    if (!isValidRef(String(userId || ""))) {
+      const error = new Error("직원 계정을 확인할 수 없습니다.");
+      error.statusCode = 403;
+      throw error;
+    }
+    const client = clientFactory({ baseUrl: config.baseUrl, secret: config.secret });
+    const issued = await client.adminTicket({ staffRef: String(userId), staffName: userEmail });
+    return { ticket: issued?.ticket ?? null, adminUrl: getIlseongAdminUrl(config) };
   }
 
   if (action === "save_settings") {
     const salesEnabled = body.salesEnabled === true;
-    if (salesEnabled) requireConfigured(config);
+    if (salesEnabled) {
+      requireConfigured(config);
+      requireGuideTemplate(guideTemplateId);
+    }
     const settings = await rpc("ilseong_app_save_settings", {
       p_sales_enabled: salesEnabled,
       p_refund_policy: body.refundPolicy ?? null,
@@ -232,7 +267,7 @@ export async function handleAdminAction({ action, body, service, config, notify,
       error.statusCode = 404;
       throw error;
     }
-    return maskContext(await loadOrderContext(rpc, orderId));
+    return toAdminContext(await loadOrderContext(rpc, orderId));
   }
 
   if (action === "retry") {
@@ -251,42 +286,14 @@ export async function handleAdminAction({ action, body, service, config, notify,
     } catch (err) {
       if (!(err instanceof IlseongApiError && err.code === "ORDER_NOT_FOUND")) throw err;
     }
-    return maskContext(await loadOrderContext(rpc, context.order.id));
-  }
-
-  if (action === "reissue") {
-    requireConfigured(config);
-    const context = await loadOrderContext(rpc, body.orderId);
-    const lineRef = String(body.lineRef || "");
-    const line = context.lines.find((item) => item.line_ref === lineRef);
-    if (!line || !isValidRef(lineRef)) {
-      const error = new Error("주문 줄을 찾을 수 없습니다.");
-      error.statusCode = 404;
-      throw error;
-    }
-    if (line.status !== "issued" || line.revoke_requested_at) {
-      const error = new Error("앱에 등록하기 전인 코드만 새 코드로 바꿀 수 있습니다.");
-      error.statusCode = 409;
-      throw error;
-    }
-    const client = clientFactory({ baseUrl: config.baseUrl, secret: config.secret });
-    const response = await client.reissue(context.order.order_number, lineRef);
-    await rpc("ilseong_app_record_lines", { p_order_id: context.order.id, p_lines: response?.lines ?? [], p_reissued: true });
-    const sent = await notify({ order: context.order, allowDuplicate: true });
-    if (sent.ok) {
-      await rpc("ilseong_app_mark_notified", { p_order_id: context.order.id, p_line_refs: [lineRef] });
-    } else {
-      // 알림은 대기열이 다시 시도한다(재발급 코드라 중복 허용으로 보냄)
-      await rpc("ilseong_app_retry_order", { p_order_id: context.order.id });
-    }
-    return { ...maskContext(await loadOrderContext(rpc, context.order.id)), notified: sent.ok, notifyError: sent.ok ? null : sent.error };
+    return toAdminContext(await loadOrderContext(rpc, context.order.id));
   }
 
   if (action === "resend") {
     const context = await loadOrderContext(rpc, body.orderId);
     const active = context.lines.filter((line) => line.code && ["issued", "redeemed"].includes(line.status) && !line.revoke_requested_at);
     if (active.length === 0) {
-      const error = new Error("보낼 앱 코드가 없습니다.");
+      const error = new Error("앱 이용 안내를 보낼 주문 줄이 없습니다.");
       error.statusCode = 409;
       throw error;
     }
@@ -294,7 +301,7 @@ export async function handleAdminAction({ action, body, service, config, notify,
     if (sent.ok) {
       await rpc("ilseong_app_mark_notified", { p_order_id: context.order.id, p_line_refs: active.map((line) => line.line_ref) });
     }
-    return { ...maskContext(await loadOrderContext(rpc, context.order.id)), notified: sent.ok, notifyError: sent.ok ? null : sent.error };
+    return { ...toAdminContext(await loadOrderContext(rpc, context.order.id)), notified: sent.ok, notifyError: sent.ok ? null : sent.error };
   }
 
   const error = new Error(`알 수 없는 action: ${action}`);
@@ -353,7 +360,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = await handleAdminAction({ action, body, service, config, notify, userId: admin.userId });
+    const result = await handleAdminAction({ action, body, service, config, notify, userId: admin.userId, userEmail: admin.email });
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
     const status = err.statusCode || (err instanceof IlseongApiError ? 502 : 500);

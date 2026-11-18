@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { createHmac, randomBytes } from "crypto";
-import { maskAppCode } from "../_lib/ilseongPartner.js";
+import { getSolapiTemplateId } from "../_lib/solapiTemplates.js";
 
 // ── 솔라피(SOLAPI) 카카오 알림톡 API 설정 ──────────────────────
 const SOLAPI_SEND_URL = "https://api.solapi.com/messages/v4/send";
@@ -21,13 +21,10 @@ const VALID_NOTIFICATION_TYPES = new Set([
   // ⚠ admin_refund_order / 정산 회수 흐름에서 호출되는 type. 이전엔 set에 없어
   //   notifyRefundCompleted가 400 INVALID_NOTIFICATION_TYPE로 거부됐다.
   "refund_completed",
-  // 일성월심 앱 코드 안내 — 코드는 호출자가 넘기지 않고 서버가 주문에서 읽는다(아래 prepareAppCodeNotification).
-  "app_code",
+  // 일성월심 앱 이용 안내 — 수신번호·주문번호는 호출자가 넘기지 않고 서버가 주문에서 읽는다(아래 prepareAppGuideNotification).
+  // 앱 코드는 구매자에게 보내지 않는다: 교재는 구매한 수북 계정으로 앱에 로그인하면 등록된다(2026-11-18).
+  "app_guide",
 ]);
-
-// 문자 대체 발송을 켜는 알림. 나머지는 SOLAPI_ENABLE_SMS_FALLBACK 설정을 그대로 따른다.
-// 앱 코드는 받지 못하면 앱을 못 쓰므로 카카오 미수신 시 솔라피가 템플릿 내용을 문자로 보낸다.
-const SMS_FALLBACK_TYPES = new Set(["app_code"]);
 
 // 카카오 알림톡 템플릿 코드 매핑 (notification_logs.template_code용 내부 라벨)
 const TEMPLATE_CODES = {
@@ -39,14 +36,14 @@ const TEMPLATE_CODES = {
   delivery_done: "SB_DELIVERY_DONE",
   restock: "SB_RESTOCK",
   refund_completed: "SB_REFUND_COMPLETED",
-  app_code: "SB_APP_CODE",
+  app_guide: "SB_APP_GUIDE",
 };
 
 // ── 메시지 본문 생성 ─────────────────────────────────────────
 // ⚠ 솔라피에 등록된 v2 템플릿 본문과 반드시 동일하게 유지할 것 (줄바꿈 포함).
 // 실제 수신 내용은 카카오가 등록 템플릿 + 변수 치환으로 렌더하므로, 이 함수는
 // notification_logs.message_body와 사이트 내 알림 본문을 발송 내용과 일치시키는 용도다.
-function buildMessageBody(type, vars) {
+export function buildMessageBody(type, vars) {
   switch (type) {
     case "pickup_accepted":
       return (
@@ -142,19 +139,16 @@ function buildMessageBody(type, vars) {
         `환불 관련 문의사항이 있으신 경우 수북(SUBOOK) 고객센터로 문의해 주세요.`
       );
 
-    // 일성월심 앱 코드 — 솔라피 등록 템플릿(수북 일성월심 앱코드 v1)과 줄바꿈까지 동일하게 유지.
-    // 카카오 심사 기준상 앱 설치 유도·다운로드 링크는 넣을 수 없다(ALIMTALK_TEMPLATES.md "일성월심 앱 코드" 절).
-    // 로그·사이트 내 알림에는 가린 코드가 들어간다(원문은 알림톡·문자로만 나간다).
-    case "app_code":
+    // 일성월심 앱 이용 안내 — 솔라피 등록 템플릿(수북 일성월심 앱안내 v1)과 줄바꿈까지 동일하게 유지.
+    // 카카오 심사 기준상 앱 설치 유도·다운로드 링크는 넣을 수 없다(ALIMTALK_TEMPLATES.md "일성월심 앱 이용 안내" 절).
+    case "app_guide":
       return (
-        `[수북(SUBOOK) 일성월심 앱 코드 안내]\n` +
+        `[수북(SUBOOK) 일성월심 앱 이용 안내]\n` +
         `안녕하세요, 수북(SUBOOK)입니다.\n` +
-        `주문하신 일성월심 학습지의 앱 이용 코드를 보내드립니다.\n` +
+        `주문하신 일성월심 학습지의 앱 이용 방법을 안내드립니다.\n` +
         `► 주문번호 : ${vars.orderNumber}\n` +
-        `► 앱 코드 : ${vars.appCode}\n` +
-        `[코드 등록 방법]\n` +
-        `일성월심 앱의 '코드 등록'에서 위 16자리 코드를 입력하면 4과목 학습지가 한 번에 등록됩니다.\n` +
-        `코드는 수북(SUBOOK) 주문 상세(비회원은 주문 조회)에서도 확인하실 수 있습니다.\n` +
+        `[이용 방법]\n` +
+        `교재를 구매한 수북(SUBOOK) 계정으로 일성월심 앱에 로그인하면 교재가 자동으로 등록됩니다. 코드를 입력하실 필요가 없습니다.\n` +
         `※ 앱 이용권은 교재 구매 고객에게 드리는 부가서비스이며, 교재를 반품·환불하면 앱 이용도 함께 끝납니다.`
       );
 
@@ -164,7 +158,7 @@ function buildMessageBody(type, vars) {
 }
 
 // ── 사이트 내 알림 센터용 짧은 제목 ──────────────────────────
-function buildInAppTitle(type, vars) {
+export function buildInAppTitle(type, vars) {
   switch (type) {
     case "pickup_accepted": return "수거 접수가 완료되었어요";
     case "inspection_done": return "검수 결과 도착";
@@ -174,7 +168,7 @@ function buildInAppTitle(type, vars) {
     case "delivery_done":   return "교재가 도착했어요";
     case "restock":         return `"${vars.productTitle ?? "알림 신청한 교재"}" 재입고`;
     case "refund_completed": return "환불이 완료되었어요";
-    case "app_code":        return "일성월심 앱 코드가 발급되었어요";
+    case "app_guide":       return "일성월심 앱에서 교재를 볼 수 있어요";
     default:                return "알림";
   }
 }
@@ -199,22 +193,7 @@ function buildInAppRefUrl(type, refType, refId, vars) {
   return "/mypage";
 }
 
-// 알림톡 타입 → 솔라피 templateId 매핑. 템플릿 검수 통과 후 SOLAPI_TEMPLATE_IDS(JSON)로 주입.
-//   예) SOLAPI_TEMPLATE_IDS={"pickup_accepted":"KA01TP...","arrived":"KA01TP...",...}
-// 새 타입은 공용 JSON env를 건드리지 않도록 코드 기본값을 둔다(templateId는 비밀값 아님, env에 같은 키가 있으면 env 우선).
-const DEFAULT_SOLAPI_TEMPLATE_IDS = {
-  app_code: "KA01TP2611091537490371CSjaDIpw6I", // 수북 일성월심 앱코드 v1 — 2026-11-10 등록·검수 요청
-};
-
-function getSolapiTemplateId(notificationType) {
-  let map = {};
-  try {
-    map = JSON.parse(process.env.SOLAPI_TEMPLATE_IDS || "{}") || {};
-  } catch {
-    map = {};
-  }
-  return map[notificationType] || DEFAULT_SOLAPI_TEMPLATE_IDS[notificationType] || "";
-}
+// 알림톡 타입 → 솔라피 templateId 매핑은 ../_lib/solapiTemplates.js (env SOLAPI_TEMPLATE_IDS 우선, 없으면 코드 기본값).
 
 // 솔라피 HMAC-SHA256 인증 헤더. signature = HMAC-SHA256(date+salt, apiSecret) hex.
 function buildSolapiAuthHeader(apiKey, apiSecret) {
@@ -259,10 +238,7 @@ async function sendKakaoAlimtalk({ recipientPhone, notificationType, templateVar
         templateId,
         variables,
         // 알림톡 실패 시 문자 대체발송 — 기본 비활성(추가 과금 방지). 켜려면 SOLAPI_ENABLE_SMS_FALLBACK=true
-        // 단, SMS_FALLBACK_TYPES(앱 코드)는 항상 대체발송(솔라피가 템플릿 내용을 문자로 보냄, 알림톡 요금은 환불·문자 요금 차감).
-        disableSms: SMS_FALLBACK_TYPES.has(notificationType)
-          ? false
-          : String(process.env.SOLAPI_ENABLE_SMS_FALLBACK || "").toLowerCase() !== "true",
+        disableSms: String(process.env.SOLAPI_ENABLE_SMS_FALLBACK || "").toLowerCase() !== "true",
       },
     },
   };
@@ -390,9 +366,9 @@ async function assertAdminUser(accessToken) {
   return supabase;
 }
 
-// ── 일성월심 앱 코드: 코드·수신번호를 서버가 주문에서 읽는다 ──────────────
-// 호출자(크론·관리자 재발송)가 넘긴 코드·번호는 쓰지 않는다 — 코드는 주문 연락처로만 나간다.
-// 로그(notification_logs)·사이트 내 알림에는 가린 코드만 남긴다.
+// ── 일성월심 앱 이용 안내: 수신번호·주문번호를 서버가 주문에서 읽는다 ──────
+// 호출자(크론·관리자 재발송)가 넘긴 번호·변수는 쓰지 않는다 — 안내는 주문 연락처로만 나간다.
+// 앱 코드는 어디에도 담지 않는다(발송 변수·로그·사이트 내 알림 모두 주문번호뿐).
 function createServiceClient() {
   const url =
     process.env.SUPABASE_URL ||
@@ -404,10 +380,10 @@ function createServiceClient() {
   return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-async function prepareAppCodeNotification({ refType, refId }) {
+async function prepareAppGuideNotification({ refType, refId }) {
   const orderId = Number(refId);
   if (refType !== "order" || !Number.isInteger(orderId) || orderId <= 0) {
-    return { ok: false, status: 400, code: "APP_CODE_REF_REQUIRED", error: "app_code는 refType=order, refId=주문 id가 필요합니다." };
+    return { ok: false, status: 400, code: "APP_GUIDE_REF_REQUIRED", error: "app_guide는 refType=order, refId=주문 id가 필요합니다." };
   }
   const service = createServiceClient();
   if (!service) {
@@ -417,20 +393,19 @@ async function prepareAppCodeNotification({ refType, refId }) {
   if (error || !context?.order) {
     return { ok: false, status: 404, code: "ORDER_NOT_FOUND", error: error?.message || "주문을 찾을 수 없습니다." };
   }
+  // 앱 서버에 등록 준비가 끝난(발급된) 줄이 있고 환불로 끝나지 않은 주문에만 보낸다
   const lines = (Array.isArray(context.lines) ? context.lines : []).filter(
-    (line) => line.code && ["issued", "redeemed"].includes(line.status) && !line.revoke_requested_at,
+    (line) => ["issued", "redeemed"].includes(line.status) && !line.revoke_requested_at,
   );
   if (lines.length === 0) {
-    return { ok: false, status: 409, code: "NO_APP_CODES", error: "보낼 앱 코드가 없습니다." };
+    return { ok: false, status: 409, code: "NO_APP_ACCESS", error: "앱 이용 안내를 보낼 주문 줄이 없습니다." };
   }
-  const orderNumber = context.order.order_number;
   return {
     ok: true,
     recipientPhone: context.order.recipient_phone,
     recipientName: context.order.recipient_name,
     recipientUserId: context.order.user_id || null,
-    sendVariables: { orderNumber, appCode: lines.map((line) => line.code).join(", ") },
-    logVariables: { orderNumber, appCode: lines.map((line) => maskAppCode(line.code)).join(", ") },
+    templateVariables: { orderNumber: context.order.order_number },
   };
 }
 
@@ -488,18 +463,15 @@ export default async function handler(req, res) {
     }));
   }
 
-  // 발송용 변수와 기록용 변수. 앱 코드만 다르다(기록에는 가린 코드).
-  let sendTemplateVariables = templateVariables || {};
-  if (notificationType === "app_code") {
-    const prepared = await prepareAppCodeNotification({ refType, refId });
+  if (notificationType === "app_guide") {
+    const prepared = await prepareAppGuideNotification({ refType, refId });
     if (!prepared.ok) {
       return res.status(prepared.status).json(makeErrorResponse({ error: prepared.error, code: prepared.code }));
     }
     recipientPhone = prepared.recipientPhone;
     recipientName = prepared.recipientName;
     recipientUserId = prepared.recipientUserId;
-    templateVariables = prepared.logVariables;
-    sendTemplateVariables = prepared.sendVariables;
+    templateVariables = prepared.templateVariables;
   }
 
   if (!recipientPhone) {
@@ -586,7 +558,7 @@ export default async function handler(req, res) {
   const kakaoResult = await sendKakaoAlimtalk({
     recipientPhone,
     notificationType,
-    templateVariables: sendTemplateVariables,
+    templateVariables,
   });
 
   const logStatus = kakaoResult.success ? "sent" : "failed";

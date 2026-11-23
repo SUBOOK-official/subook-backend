@@ -7,7 +7,7 @@ import {
   isValidRef,
   syncOrder,
 } from "../_lib/ilseongPartner.js";
-import { getSolapiTemplateId } from "../_lib/solapiTemplates.js";
+import { fetchSolapiTemplateStatus, getSolapiTemplateId } from "../_lib/solapiTemplates.js";
 
 /**
  * 일성월심 앱 패키지 — 대기열 처리 크론 + 관리 API
@@ -22,7 +22,8 @@ import { getSolapiTemplateId } from "../_lib/solapiTemplates.js";
  *
  * 관리 API(관리자 로그인 토큰):
  *   GET  ?action=overview                         연결 여부·설정·대기열·앱 패키지 상품
- *   POST {action:"save_settings", salesEnabled, refundPolicy, appDownloadUrl}
+ *   POST {action:"save_settings", salesEnabled?, refundPolicy?, appDownloadUrl?}   보내지 않은 것은 그대로 둔다
+ *   POST {action:"guide_template"}                앱 이용 안내 알림톡의 카카오 검수 상태
  *   POST {action:"order", orderNumber}            주문의 앱 등록 상태(코드는 담지 않는다)
  *   POST {action:"retry", orderId}                지금 다시 처리
  *   POST {action:"refresh", orderId}              앱 서버 상태(등록 여부) 다시 읽기
@@ -209,8 +210,24 @@ function requireConfigured(config) {
   }
 }
 
-// 앱 이용 안내 알림톡 템플릿 번호가 있어야 판매를 켠다. 없이 켜면 결제된 주문마다 안내 발송이 실패해 대기열에 쌓인다.
-// (번호가 있어도 카카오 검수 승인 전이면 발송이 거절된다 — 승인 확인은 사람이 한다. ALIMTALK_TEMPLATES.md)
+// 앱 이용 안내 알림톡 템플릿 번호가 있고 카카오 검수를 통과해야 판매를 켠다.
+// 없이 켜면 결제된 주문마다 안내 발송이 실패해 대기열에 쌓인다.
+// 검수 상태를 확인하지 못했을 때(UNKNOWN: 솔라피 연결 실패 등)는 막지 않는다 — 확인된 미승인만 막는다.
+const GUIDE_TEMPLATE_NOT_APPROVED = {
+  PENDING: "아직 카카오 검수를 받지 않았습니다",
+  INSPECTING: "카카오가 아직 검수하고 있습니다",
+  REJECTED: "카카오 검수에서 반려됐습니다",
+};
+
+function requireGuideTemplateApproved(status) {
+  if (GUIDE_TEMPLATE_NOT_APPROVED[status]) {
+    const error = new Error(`앱 이용 안내 알림톡이 승인되지 않아 판매를 켤 수 없습니다. (${GUIDE_TEMPLATE_NOT_APPROVED[status]})`);
+    error.statusCode = 409;
+    error.code = "APP_GUIDE_TEMPLATE_NOT_APPROVED";
+    throw error;
+  }
+}
+
 function requireGuideTemplate(guideTemplateId) {
   if (!guideTemplateId) {
     const error = new Error("앱 이용 안내 알림톡 템플릿 번호가 아직 없어 판매를 켤 수 없습니다. 솔라피에 템플릿을 등록하고 번호를 넣은 뒤 켜 주세요.");
@@ -223,6 +240,7 @@ function requireGuideTemplate(guideTemplateId) {
 export async function handleAdminAction({
   action, body, service, config, notify, userId, userEmail = null, clientFactory = createIlseongClient,
   guideTemplateId = getSolapiTemplateId("app_guide"),
+  templateStatus = fetchSolapiTemplateStatus,
 }) {
   const rpc = rpcCaller(service);
 
@@ -246,16 +264,29 @@ export async function handleAdminAction({
     return { ticket: issued?.ticket ?? null, apiBaseUrl: getIlseongApiBaseUrl(config) };
   }
 
+  if (action === "guide_template") {
+    return {
+      guideTemplateReady: Boolean(guideTemplateId),
+      guideTemplateStatus: guideTemplateId ? await templateStatus(guideTemplateId) : "UNKNOWN",
+    };
+  }
+
   if (action === "save_settings") {
-    const salesEnabled = body.salesEnabled === true;
+    // 보내지 않은 것은 그대로 둔다: 판매 스위치만 바꾸거나 환불 방식·앱 받는 곳 주소만 바꿀 수 있다
+    const salesEnabled = typeof body.salesEnabled === "boolean" ? body.salesEnabled : null;
     if (salesEnabled) {
       requireConfigured(config);
       requireGuideTemplate(guideTemplateId);
     }
+    const current = await rpc("ilseong_app_get_settings", {});
+    // 꺼져 있던 판매를 켤 때만 카카오 검수 상태를 묻는다(이미 켜져 있으면 다른 설정 저장을 막지 않는다)
+    if (salesEnabled && current?.sales_enabled !== true) {
+      requireGuideTemplateApproved(await templateStatus(guideTemplateId));
+    }
     const settings = await rpc("ilseong_app_save_settings", {
       p_sales_enabled: salesEnabled,
       p_refund_policy: body.refundPolicy ?? null,
-      p_app_download_url: body.appDownloadUrl ?? null,
+      p_app_download_url: Object.hasOwn(body, "appDownloadUrl") ? body.appDownloadUrl ?? null : current?.app_download_url ?? null,
       p_actor: userId ?? null,
     });
     return { configured: config.configured, settings };
